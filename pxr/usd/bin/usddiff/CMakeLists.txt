@@ -117,6 +117,71 @@ else()
     message(STATUS "Skipping alembic-based usddiff tests because PXR_BUILD_ALEMBIC_PLUGIN=OFF")
 endif()
 
+if (PXR_BUILD_DRACO_PLUGIN)
+    # Checks that USD diff tool successfully recognizes and loads Draco files.
+    pxr_install_test_dir(
+        SRC testenv/testDiffToolDracoFormat
+        DEST testUsdDiffWithDracoFiles
+    )
+
+    pxr_register_test(testUsdDiffWithDracoFiles
+    PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff --noeffect CubeWithGenericPrimvars.drc CubeWithGenericPrimvars.drc"
+        EXPECTED_RETURN_CODE 0
+        PRE_PATH
+            ${CMAKE_INSTALL_PREFIX}/bin
+    )
+
+    # Checks that the content of Draco file compares equally to the
+    # corresponding USDA file.
+    pxr_install_test_dir(
+        SRC testenv/testDiffToolDracoFormat
+	DEST testUsdDiffWithUsdaAndDracoFiles
+    )
+
+    pxr_register_test(testUsdDiffWithUsdaAndDracoFiles
+    PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff --noeffect CubeWithGenericPrimvars.drc CubeWithGenericPrimvars.usda"
+        EXPECTED_RETURN_CODE 0
+        PRE_PATH
+            ${CMAKE_INSTALL_PREFIX}/bin
+    )
+
+    # Checks that USD diff tool can load USDA file that refer to Draco file.
+    # Note that the files are flattened in order to pull in the content of
+    # referred Draco files and not just their references.
+    pxr_install_test_dir(
+        SRC testenv/testDiffToolDracoFormat
+        DEST testUsdDiffWithReferredDracoFiles
+    )
+
+    pxr_register_test(testUsdDiffWithReferredDracoFiles
+    PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff --noeffect --flatten CubeWithGenericPrimvarsCompressed.usda CubeWithGenericPrimvarsCompressed.usda"
+        EXPECTED_RETURN_CODE 0
+        PRE_PATH
+            ${CMAKE_INSTALL_PREFIX}/bin
+    )
+
+    # Checks that USD diff tool can load USDZ file that includes Draco files.
+    # Note that the files are flattened in order to pull in the content of
+    # referred Draco files and not just their references.
+    pxr_install_test_dir(
+	SRC testenv/testDiffToolDracoFormat
+        DEST testUsdDiffWithDracoUsdz
+    )
+
+    pxr_register_test(testUsdDiffWithDracoUsdz
+    PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff --noeffect --flatten ComplexSetCompressed.usdz ComplexSetCompressed.usdz"
+        EXPECTED_RETURN_CODE 0
+        PRE_PATH
+            ${CMAKE_INSTALL_PREFIX}/bin
+    )
+else()
+    message(STATUS "Skipping Draco-based usddiff tests because PXR_BUILD_DRACO_PLUGIN=OFF")
+endif()
+
 pxr_install_test_dir(
     SRC testenv/testDiffToolComposedResults
     DEST testUsdDiffComposedResults1
@@ -247,6 +312,60 @@ pxr_install_test_dir(
 pxr_register_test(testUsdDiffWithDirectories8
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff --noeffect b/ a.usda b.usda"
+    EXPECTED_RETURN_CODE 1
+    PRE_PATH
+        ${CMAKE_INSTALL_PREFIX}/bin
+)
+
+pxr_install_test_dir(
+    SRC testenv/testDiffToolIterateUsdz
+    DEST testDiffToolIterateUsdz1
+)
+
+pxr_register_test(testDiffToolIterateUsdz1
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff a.usdz a.usdz"
+    EXPECTED_RETURN_CODE 0
+    PRE_PATH
+        ${CMAKE_INSTALL_PREFIX}/bin
+)
+
+pxr_install_test_dir(
+    SRC testenv/testDiffToolIterateUsdz
+    DEST testDiffToolIterateUsdz2
+)
+
+pxr_register_test(testDiffToolIterateUsdz2
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff a.usdz b.usdz"
+    EXPECTED_RETURN_CODE 1
+    STDOUT_REDIRECT iterate_usd.txt
+    DIFF_COMPARE iterate_usd.txt
+    PRE_PATH
+        ${CMAKE_INSTALL_PREFIX}/bin
+)
+
+pxr_install_test_dir(
+    SRC testenv/testDiffToolIterateUsdz
+    DEST testDiffToolIterateUsdz3
+)
+
+pxr_register_test(testDiffToolIterateUsdz3
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff imagea.usdz imagea.usdz"
+    EXPECTED_RETURN_CODE 0
+    PRE_PATH
+        ${CMAKE_INSTALL_PREFIX}/bin
+)
+
+pxr_install_test_dir(
+    SRC testenv/testDiffToolIterateUsdz
+    DEST testDiffToolIterateUsdz4
+)
+
+pxr_register_test(testDiffToolIterateUsdz4
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usddiff imagea.usdz imageb.usdz"
     EXPECTED_RETURN_CODE 1
     PRE_PATH
         ${CMAKE_INSTALL_PREFIX}/bin

@@ -3,7 +3,9 @@ set(DIRS
     usdchecker
     usddiff
     usddumpcrate
+    usdgenschemafromsdr
     usdedit
+    usdfixbrokenpixarschemas
     usdresolve
     usdstitch
     usdstitchclips
@@ -16,4 +18,8 @@ set(DIRS
 foreach(d ${DIRS})
     add_subdirectory(${d})
 endforeach()
+
+if (PXR_BUILD_DRACO_PLUGIN)
+    add_subdirectory(usdcompress)
+endif()
 

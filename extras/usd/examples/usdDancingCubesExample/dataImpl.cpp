@@ -96,6 +96,12 @@ static const SdfPath &_GetRootPrimPath()
     if (value) { *value = VtValue(val); } \
     return true;
 
+UsdDancingCubesExample_DataImpl::UsdDancingCubesExample_DataImpl() 
+{
+    _params.perSide = 0;
+    _InitFromParams();
+}
+
 UsdDancingCubesExample_DataImpl::UsdDancingCubesExample_DataImpl(
     const UsdDancingCubesExample_DataParams &params) 
     : _params(params)
@@ -103,31 +109,25 @@ UsdDancingCubesExample_DataImpl::UsdDancingCubesExample_DataImpl(
     _InitFromParams();
 }
 
-bool 
-UsdDancingCubesExample_DataImpl::IsEmpty() const
-{
-    return _primSpecPaths.empty();
-}
-
 SdfSpecType 
 UsdDancingCubesExample_DataImpl::GetSpecType(
-    const SdfAbstractDataSpecId &id) const
+    const SdfPath &path) const
 {
     // All specs are generated.
-    if (id.IsProperty()) {
+    if (path.IsPropertyPath()) {
         // A specific set of defined properties exist on the leaf prims only
         // as attributes. Non leaf prims have no properties.
-        if (_LeafPrimProperties->count(id.GetPropertyName()) && 
-            _leafPrimDataMap.count(id.GetPropertyOwningSpecPath())) {
+        if (_LeafPrimProperties->count(path.GetNameToken()) && 
+            _leafPrimDataMap.count(path.GetAbsoluteRootOrPrimPath())) {
             return SdfSpecTypeAttribute;
         }
     } else {
         // Special case for pseudoroot.
-        if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath()) {
+        if (path == SdfPath::AbsoluteRootPath()) {
             return SdfSpecTypePseudoRoot;
         }
         // All other valid prim spec paths are cached.
-        if (_primSpecPaths.count(id.GetFullSpecPath())) {
+        if (_primSpecPaths.count(path)) {
             return SdfSpecTypePrim;
         }
     }
@@ -137,27 +137,31 @@ UsdDancingCubesExample_DataImpl::GetSpecType(
 
 bool 
 UsdDancingCubesExample_DataImpl::Has(
-    const SdfAbstractDataSpecId &id, const TfToken &field, VtValue *value) const
+    const SdfPath &path, const TfToken &field, VtValue *value) const
 {
+    if (_primSpecPaths.empty()) {
+        return false;
+    }
+
     // If property spec, check property fields
-    if (id.IsProperty()) {
+    if (path.IsPropertyPath()) {
 
         if (field == SdfFieldKeys->TypeName) {
-            return _HasPropertyTypeNameValue(id, value);
+            return _HasPropertyTypeNameValue(path, value);
         } else if (field == SdfFieldKeys->Default) {
-            return _HasPropertyDefaultValue(id, value);
+            return _HasPropertyDefaultValue(path, value);
         } else if (field == SdfFieldKeys->TimeSamples) {
             // Only animated properties have time samples.
-            if (_IsAnimatedProperty(id)) {
+            if (_IsAnimatedProperty(path)) {
                 // Will need to generate the full SdfTimeSampleMap with a 
                 // time sample value for each discrete animated frame if the 
                 // value of the TimeSamples field is requested. Use a generator
                 // function in case we don't need to output the value as this
                 // can be expensive.
-                auto _MakeTimeSampleMap = [this, id]() {
+                auto _MakeTimeSampleMap = [this, &path]() {
                     SdfTimeSampleMap sampleMap;
                     for (auto time : _animTimeSampleTimes) {
-                         QueryTimeSample(id, time, &sampleMap[time]);
+                         QueryTimeSample(path, time, &sampleMap[time]);
                     }
                     return sampleMap;
                 };
@@ -165,7 +169,7 @@ UsdDancingCubesExample_DataImpl::Has(
                 RETURN_TRUE_WITH_OPTIONAL_VALUE(_MakeTimeSampleMap());
             }
         } 
-    } else if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath()) {
+    } else if (path == SdfPath::AbsoluteRootPath()) {
         // Special case check for the pseudoroot prim spec.
         if (field == SdfChildrenKeys->PrimChildren) {
             // Pseudoroot only has the root prim as a child
@@ -175,28 +179,22 @@ UsdDancingCubesExample_DataImpl::Has(
         }
         // Default prim is always the root prim.
         if (field == SdfFieldKeys->DefaultPrim) {
-            if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath() ) {
-                RETURN_TRUE_WITH_OPTIONAL_VALUE(_GetRootPrimPath().GetNameToken());
-            }
+            RETURN_TRUE_WITH_OPTIONAL_VALUE(_GetRootPrimPath().GetNameToken());
         }
         // Start time code is always 0
         if (field == SdfFieldKeys->StartTimeCode) {
-            if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath() ) {
-                RETURN_TRUE_WITH_OPTIONAL_VALUE(0.0);
-            }
+            RETURN_TRUE_WITH_OPTIONAL_VALUE(0.0);
         }
         // End time code is always num frames - 1
         if (field == SdfFieldKeys->EndTimeCode) {
-            if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath() ) {
-                RETURN_TRUE_WITH_OPTIONAL_VALUE(double(_params.numFrames - 1));
-            }
+            RETURN_TRUE_WITH_OPTIONAL_VALUE(double(_params.numFrames - 1));
         }
 
     } else {
         // Otherwise check prim spec fields.
         if (field == SdfFieldKeys->Specifier) {
             // All our prim specs use the "def" specifier.
-            if (_primSpecPaths.count(id.GetFullSpecPath())) {
+            if (_primSpecPaths.count(path)) {
                 RETURN_TRUE_WITH_OPTIONAL_VALUE(SdfSpecifierDef);
             }
         }
@@ -204,7 +202,7 @@ UsdDancingCubesExample_DataImpl::Has(
         if (field == SdfFieldKeys->TypeName) {
             // Only the leaf prim specs have a type name determined from the 
             // params.
-            if (_leafPrimDataMap.count(id.GetFullSpecPath())) {
+            if (_leafPrimDataMap.count(path)) {
                 RETURN_TRUE_WITH_OPTIONAL_VALUE(_params.geomType);
             }
         }
@@ -212,15 +210,14 @@ UsdDancingCubesExample_DataImpl::Has(
         if (field == SdfChildrenKeys->PrimChildren) {
             // Non-leaf prims have the prim children. The list is the same set 
             // of prim child names for each non-leaf prim regardless of depth.
-            if (_primSpecPaths.count(id.GetFullSpecPath()) && 
-                !_leafPrimDataMap.count(id.GetFullSpecPath())) {
+            if (_primSpecPaths.count(path) && !_leafPrimDataMap.count(path)) {
                 RETURN_TRUE_WITH_OPTIONAL_VALUE(_primChildNames);
             }
         }
 
         if (field == SdfChildrenKeys->PropertyChildren) {
             // Leaf prims have the same specified set of property children.
-            if (_leafPrimDataMap.count(id.GetFullSpecPath())) {
+            if (_leafPrimDataMap.count(path)) {
                 RETURN_TRUE_WITH_OPTIONAL_VALUE(_propertyNameTokens->allTokens);
             }
         }
@@ -234,21 +231,20 @@ UsdDancingCubesExample_DataImpl::VisitSpecs(
     const SdfAbstractData &data, SdfAbstractDataSpecVisitor *visitor) const
 {
     // Visit the pseudoroot.
-    if (!visitor->VisitSpec(
-            data, SdfAbstractDataSpecId(&SdfPath::AbsoluteRootPath()))) {
+    if (!visitor->VisitSpec(data, SdfPath::AbsoluteRootPath())) {
         return;
     }
     // Visit all the cached prim spec paths.
     for (const auto &path: _primSpecPaths) {
-        if (!visitor->VisitSpec(data, SdfAbstractDataSpecId(&path))) {
+        if (!visitor->VisitSpec(data, path)) {
             return;
         }
     }
     // Visit the property specs which exist only on leaf prims.
-    for (auto it : _leafPrimDataMap) {
+    for (const auto &it : _leafPrimDataMap) {
         for (const TfToken &propertyName : _propertyNameTokens->allTokens) {
             if (!visitor->VisitSpec(
-                data, SdfAbstractDataSpecId(&it.first, &propertyName))) {
+                    data, it.first.AppendProperty(propertyName))) {
                 return;
             }
         }
@@ -256,13 +252,18 @@ UsdDancingCubesExample_DataImpl::VisitSpecs(
 }
 
 const std::vector<TfToken> &
-UsdDancingCubesExample_DataImpl::List(const SdfAbstractDataSpecId &id) const
+UsdDancingCubesExample_DataImpl::List(const SdfPath &path) const
 {
-    if (id.IsProperty()) {
+    static std::vector<TfToken> empty;
+    if (_primSpecPaths.empty()) {
+        return empty;
+    }
+
+    if (path.IsPropertyPath()) {
         // For properties, check that it's a valid leaf prim property
         const _LeafPrimPropertyInfo *propInfo = 
-            TfMapLookupPtr(*_LeafPrimProperties, id.GetPropertyName());
-        if (propInfo &&_leafPrimDataMap.count(id.GetPropertyOwningSpecPath())) {
+            TfMapLookupPtr(*_LeafPrimProperties, path.GetNameToken());
+        if (propInfo &&_leafPrimDataMap.count(path.GetAbsoluteRootOrPrimPath())) {
             // Include time sample field in the property is animated.
             if (propInfo->isAnimated) {
                 static std::vector<TfToken> animPropFields(
@@ -277,7 +278,7 @@ UsdDancingCubesExample_DataImpl::List(const SdfAbstractDataSpecId &id) const
                 return nonAnimPropFields;
             }
         }
-    } else if (id.GetFullSpecPath() == SdfPath::AbsoluteRootPath()) {
+    } else if (path == SdfPath::AbsoluteRootPath()) {
         // Pseudoroot fields.
         static std::vector<TfToken> pseudoRootFields(
             {SdfChildrenKeys->PrimChildren,
@@ -285,9 +286,9 @@ UsdDancingCubesExample_DataImpl::List(const SdfAbstractDataSpecId &id) const
              SdfFieldKeys->StartTimeCode,
              SdfFieldKeys->EndTimeCode});
         return pseudoRootFields;
-    } else if (_primSpecPaths.count(id.GetFullSpecPath())) {
+    } else if (_primSpecPaths.count(path)) {
         // Prim spec. Different fields for leaf and non-leaf prims.
-        if (_leafPrimDataMap.count(id.GetFullSpecPath())) {
+        if (_leafPrimDataMap.count(path)) {
             static std::vector<TfToken> leafPrimFields(
                 {SdfFieldKeys->Specifier,
                  SdfFieldKeys->TypeName,
@@ -301,7 +302,6 @@ UsdDancingCubesExample_DataImpl::List(const SdfAbstractDataSpecId &id) const
         }
     }
 
-    static std::vector<TfToken> empty;
     return empty;
 }
 
@@ -314,11 +314,11 @@ UsdDancingCubesExample_DataImpl::ListAllTimeSamples() const
 
 const std::set<double> &
 UsdDancingCubesExample_DataImpl::ListTimeSamplesForPath(
-    const SdfAbstractDataSpecId &id) const
+    const SdfPath &path) const
 {
     // All animated properties use the same set of time samples; all other
     // specs return empty.
-    if (_IsAnimatedProperty(id)) {
+    if (_IsAnimatedProperty(path)) {
         return _animTimeSampleTimes;
     }
     static std::set<double> empty;
@@ -356,11 +356,11 @@ UsdDancingCubesExample_DataImpl::GetBracketingTimeSamples(
 
 size_t 
 UsdDancingCubesExample_DataImpl::GetNumTimeSamplesForPath(
-    const SdfAbstractDataSpecId &id) const
+    const SdfPath &path) const
 {
     // All animated properties use the same set of time samples; all other specs
     // have no time samples.
-    if (_IsAnimatedProperty(id)) {
+    if (_IsAnimatedProperty(path)) {
         return _animTimeSampleTimes.size();
     }
     return 0;
@@ -368,11 +368,11 @@ UsdDancingCubesExample_DataImpl::GetNumTimeSamplesForPath(
 
 bool 
 UsdDancingCubesExample_DataImpl::GetBracketingTimeSamplesForPath(
-    const SdfAbstractDataSpecId &id, double time, 
+    const SdfPath &path, double time, 
     double *tLower, double *tUpper) const
 {
     // All animated properties use the same set of time samples.
-    if (_IsAnimatedProperty(id)) {
+    if (_IsAnimatedProperty(path)) {
         return GetBracketingTimeSamples(time, tLower, tUpper);
     }
 
@@ -381,11 +381,11 @@ UsdDancingCubesExample_DataImpl::GetBracketingTimeSamplesForPath(
 
 bool 
 UsdDancingCubesExample_DataImpl::QueryTimeSample(
-    const SdfAbstractDataSpecId &id, double time, VtValue *value) const
+    const SdfPath &path, double time, VtValue *value) const
 {
     // Only leaf prim properties have time samples
-    const _LeafPrimData *val = 
-        TfMapLookupPtr(_leafPrimDataMap, id.GetPropertyOwningSpecPath());
+    const _LeafPrimData *val =
+        TfMapLookupPtr(_leafPrimDataMap, path.GetAbsoluteRootOrPrimPath());
     if (!val) {
         return false;
     }
@@ -395,17 +395,17 @@ UsdDancingCubesExample_DataImpl::QueryTimeSample(
     // is added to the query time to offset the animation loop for each prim.
     double offsetTime = time + val->frameOffset;
 
-    if (id.GetPropertyName() == _propertyNameTokens->xformOpTranslate) {
+    if (path.GetNameToken() == _propertyNameTokens->xformOpTranslate) {
         // Animated position, anchored at the prim's layout position.
         RETURN_TRUE_WITH_OPTIONAL_VALUE(
             val->pos + GfVec3d(_GetTranslateOffset(offsetTime)));
     }
-    if (id.GetPropertyName() == _propertyNameTokens->xformOpRotateXYZ) {
+    if (path.GetNameToken() == _propertyNameTokens->xformOpRotateXYZ) {
         // Animated rotation.
         RETURN_TRUE_WITH_OPTIONAL_VALUE(
             GfVec3f(_GetRotateAmount(offsetTime)));
     }
-    if (id.GetPropertyName() == _propertyNameTokens->displayColor) {
+    if (path.GetNameToken() == _propertyNameTokens->displayColor) {
         // Animated color value.
         RETURN_TRUE_WITH_OPTIONAL_VALUE(
             VtVec3fArray({_GetColor(offsetTime)}));
@@ -420,6 +420,9 @@ UsdDancingCubesExample_DataImpl::_InitFromParams()
         return;
     }
 
+    // Layer always has a root spec that is the default prim of the layer.
+    _primSpecPaths.insert(_GetRootPrimPath());
+
     // Cache the list of prim child names, numbered 0 to perSide
     _primChildNames.resize(_params.perSide);
     for (int i = 0; i < _params.perSide; ++ i) {
@@ -432,9 +435,6 @@ UsdDancingCubesExample_DataImpl::_InitFromParams()
     // in the cube layout
     const double frameOffsetAmount = 
         _params.framesPerCycle / (3.0 * _params.perSide);
-
-    // Layer always has a root spec that is the default prim of the layer.
-    _primSpecPaths.insert(_GetRootPrimPath());
 
     // The layout is a cube of geom prims. We build up each dimension of this
     // cube as a hierarchy of child prims.
@@ -492,46 +492,46 @@ UsdDancingCubesExample_DataImpl::_InitFromParams()
 
 bool 
 UsdDancingCubesExample_DataImpl::_IsAnimatedProperty(
-    const SdfAbstractDataSpecId &id) const
+    const SdfPath &path) const
 {
     // Check that it is a property id.
-    if (!id.IsProperty()) {
+    if (!path.IsPropertyPath()) {
         return false;
     }
     // Check that its one of our animated property names.
     const _LeafPrimPropertyInfo *propInfo = 
-        TfMapLookupPtr(*_LeafPrimProperties, id.GetPropertyName());
+        TfMapLookupPtr(*_LeafPrimProperties, path.GetNameToken());
     if (!(propInfo && propInfo->isAnimated)) {
         return false;
     }
     // Check that it belongs to a leaf prim.
-    return TfMapLookupPtr(_leafPrimDataMap, id.GetPropertyOwningSpecPath());
+    return TfMapLookupPtr(_leafPrimDataMap, path.GetAbsoluteRootOrPrimPath());
 }
 
 bool 
 UsdDancingCubesExample_DataImpl::_HasPropertyDefaultValue(
-    const SdfAbstractDataSpecId &id, VtValue *value) const
+    const SdfPath &path, VtValue *value) const
 {
     // Check that it is a property id.
-    if (!id.IsProperty()) {
+    if (!path.IsPropertyPath()) {
         return false;
     }
 
     // Check that it is one of our property names.
     const _LeafPrimPropertyInfo *propInfo = 
-        TfMapLookupPtr(*_LeafPrimProperties, id.GetPropertyName());
+        TfMapLookupPtr(*_LeafPrimProperties, path.GetNameToken());
     if (!propInfo) {
         return false;
     }
 
     // Check that it belongs to a leaf prim before getting the default value
     const _LeafPrimData *val = 
-        TfMapLookupPtr(_leafPrimDataMap, id.GetPropertyOwningSpecPath());
+        TfMapLookupPtr(_leafPrimDataMap, path.GetAbsoluteRootOrPrimPath());
     if (val) {
         if (value) {
             // Special case for translate property. Each leaf prim has its own
             // default position.
-            if (id.GetPropertyName() == _propertyNameTokens->xformOpTranslate) {
+            if (path.GetNameToken() == _propertyNameTokens->xformOpTranslate) {
                 *value = VtValue(val->pos);
             } else {
                 *value = propInfo->defaultValue;
@@ -545,23 +545,23 @@ UsdDancingCubesExample_DataImpl::_HasPropertyDefaultValue(
 
 bool 
 UsdDancingCubesExample_DataImpl::_HasPropertyTypeNameValue(
-    const SdfAbstractDataSpecId &id, VtValue *value) const
+    const SdfPath &path, VtValue *value) const
 {
     // Check that it is a property id.
-    if (!id.IsProperty()) {
+    if (!path.IsPropertyPath()) {
         return false;
     }
 
     // Check that it is one of our property names.
     const _LeafPrimPropertyInfo *propInfo = 
-        TfMapLookupPtr(*_LeafPrimProperties, id.GetPropertyName());
+        TfMapLookupPtr(*_LeafPrimProperties, path.GetNameToken());
     if (!propInfo) {
         return false;
     }
 
     // Check that it belongs to a leaf prim before getting the type name value
     const _LeafPrimData *val = 
-        TfMapLookupPtr(_leafPrimDataMap, id.GetPropertyOwningSpecPath());
+        TfMapLookupPtr(_leafPrimDataMap, path.GetAbsoluteRootOrPrimPath());
     if (val) {
         if (value) {
             *value = VtValue(propInfo->typeName);

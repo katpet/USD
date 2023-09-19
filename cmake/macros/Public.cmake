@@ -23,6 +23,51 @@
 #
 include(Private)
 
+function(pxr_build_documentation)
+    configure_file(${PROJECT_SOURCE_DIR}/docs/doxygen/Doxyfile.in
+                   ${PROJECT_BINARY_DIR}/Doxyfile)
+
+    add_custom_target(
+        documentation
+        ALL
+        # We need to manually copy pxr.h into the docs/include directory
+        # since it's generated outside of the libraries.
+        COMMAND
+            ${CMAKE_COMMAND} -E copy
+            "${PROJECT_BINARY_DIR}/include/pxr/pxr.h"
+            "${PROJECT_BINARY_DIR}/docs/include/pxr/pxr.h"
+        COMMAND 
+            ${CMAKE_COMMAND} -E copy_directory
+            "${PROJECT_SOURCE_DIR}/docs"
+            "${PROJECT_BINARY_DIR}/docs"
+    )
+
+    # Execute doxygen during the install step. All of the files we want
+    # doxygen to process should already have been copied to the docs
+    # directory during the build step
+    install(CODE "execute_process(COMMAND ${DOXYGEN_EXECUTABLE} ${PROJECT_BINARY_DIR}/Doxyfile)")
+
+    set(INST_DOCS_ROOT  "${CMAKE_INSTALL_PREFIX}/docs")
+
+    set(BUILT_DOCS_TAG_FILE "${PROJECT_BINARY_DIR}/docs/USD.tag")
+    install(
+        FILES ${BUILT_DOCS_TAG_FILE}
+        DESTINATION ${INST_DOCS_ROOT}
+    )
+
+    set(BUILT_HTML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_html")
+    install(
+        DIRECTORY ${BUILT_HTML_DOCS}
+        DESTINATION ${INST_DOCS_ROOT}
+    )
+
+    set(BUILT_XML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_xml")
+    install(
+        DIRECTORY ${BUILT_XML_DOCS}
+        DESTINATION ${INST_DOCS_ROOT}
+    )
+endfunction()
+
 function(pxr_python_bin BIN_NAME)
     set(oneValueArgs
         PYTHON_FILE
@@ -141,7 +186,7 @@ function(pxr_cpp_bin BIN_NAME)
     # Install and include headers from the build directory.
     get_filename_component(
         PRIVATE_INC_DIR
-        "${CMAKE_BINARY_DIR}/include"
+        "${PROJECT_BINARY_DIR}/include"
         ABSOLUTE
     )
 
@@ -152,6 +197,7 @@ function(pxr_cpp_bin BIN_NAME)
     )
 
     _pxr_init_rpath(rpath "${installDir}")
+    _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
     _pxr_install_rpath(rpath ${BIN_NAME})
 
     _pxr_target_link_libraries(${BIN_NAME}
@@ -168,8 +214,6 @@ endfunction()
 function(pxr_library NAME)
     set(options
         DISABLE_PRECOMPILED_HEADERS
-        KATANA_PLUGIN
-        MAYA_PLUGIN
     )
     set(oneValueArgs
         TYPE
@@ -183,6 +227,7 @@ function(pxr_library NAME)
         CPPFILES
         LIBRARIES
         INCLUDE_DIRS
+        DOXYGEN_FILES
         RESOURCE_FILES
         PYTHON_PUBLIC_CLASSES
         PYTHON_PRIVATE_CLASSES
@@ -222,14 +267,16 @@ function(pxr_library NAME)
     endif()
 
     # Collect libraries.
-    get_property(help CACHE PXR_ALL_LIBS PROPERTY HELPSTRING)
-    list(APPEND PXR_ALL_LIBS ${NAME})
-    set(PXR_ALL_LIBS "${PXR_ALL_LIBS}" CACHE INTERNAL "${help}")
-    if(args_TYPE STREQUAL "STATIC")
-        # Note if this library is explicitly STATIC.
-        get_property(help CACHE PXR_STATIC_LIBS PROPERTY HELPSTRING)
-        list(APPEND PXR_STATIC_LIBS ${NAME})
-        set(PXR_STATIC_LIBS "${PXR_STATIC_LIBS}" CACHE INTERNAL "${help}")
+    if(NOT args_TYPE STREQUAL "PLUGIN")
+        get_property(help CACHE PXR_ALL_LIBS PROPERTY HELPSTRING)
+        list(APPEND PXR_ALL_LIBS ${NAME})
+        set(PXR_ALL_LIBS "${PXR_ALL_LIBS}" CACHE INTERNAL "${help}")
+        if(args_TYPE STREQUAL "STATIC")
+            # Note if this library is explicitly STATIC.
+            get_property(help CACHE PXR_STATIC_LIBS PROPERTY HELPSTRING)
+            list(APPEND PXR_STATIC_LIBS ${NAME})
+            set(PXR_STATIC_LIBS "${PXR_STATIC_LIBS}" CACHE INTERNAL "${help}")
+        endif()
     endif()
 
     # Expand classes into filenames.
@@ -252,21 +299,6 @@ function(pxr_library NAME)
 
         set(prefix "")
         set(suffix ${CMAKE_SHARED_LIBRARY_SUFFIX})
-
-        # Katana plugins install into a specific sub directory structure.
-        # In particular, shared objects install into plugin/Libs
-        if(args_KATANA_PLUGIN)
-            set(subdir "Libs")
-        endif()
-
-        # Maya plugins require the .mll suffix on Windows and .bundle on OSX.
-        if(args_MAYA_PLUGIN)
-            if (WIN32)
-                set(suffix ".mll")
-            elseif(APPLE)
-                set(suffix ".bundle")
-            endif()
-        endif()
     else()
         # If the caller didn't specify the library type then choose the
         # type now.
@@ -280,7 +312,7 @@ function(pxr_library NAME)
             endif()
         endif()
 
-        set(prefix "${PXR_LIB_PREFIX}")
+        _get_library_prefix(prefix)
         if(args_TYPE STREQUAL "STATIC")
             set(suffix ${CMAKE_STATIC_LIBRARY_SUFFIX})
         else()
@@ -304,6 +336,7 @@ function(pxr_library NAME)
         LIBRARIES "${args_LIBRARIES}"
         INCLUDE_DIRS "${args_INCLUDE_DIRS}"
         RESOURCE_FILES "${args_RESOURCE_FILES}"
+        DOXYGEN_FILES "${args_DOXYGEN_FILES}"
         PRECOMPILED_HEADERS "${pch}"
         PRECOMPILED_HEADER_NAME "${args_PRECOMPILED_HEADER_NAME}"
         LIB_INSTALL_PREFIX_RESULT libInstallPrefix
@@ -370,6 +403,12 @@ function (pxr_create_test_module MODULE_NAME)
         return()
     endif()
 
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
+        return()
+    endif()
+
     cmake_parse_arguments(tm "" "INSTALL_PREFIX;SOURCE_DIR" "" ${ARGN})
 
     if (NOT tm_SOURCE_DIR)
@@ -405,118 +444,134 @@ function (pxr_create_test_module MODULE_NAME)
 endfunction() # pxr_create_test_module
 
 function(pxr_build_test_shared_lib LIBRARY_NAME)
-    if (PXR_BUILD_TESTS)
-        cmake_parse_arguments(bt
-            ""
-            "INSTALL_PREFIX;SOURCE_DIR"
-            "LIBRARIES;CPPFILES"
-            ${ARGN}
-        )
+    if (NOT PXR_BUILD_TESTS)
+        return()
+    endif()
+
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
+        return()
+    endif()
+
+    cmake_parse_arguments(bt
+        ""
+        "INSTALL_PREFIX;SOURCE_DIR"
+        "LIBRARIES;CPPFILES"
+        ${ARGN}
+    )
         
-        add_library(${LIBRARY_NAME}
-            SHARED
-            ${bt_CPPFILES}
-        )
-        _pxr_target_link_libraries(${LIBRARY_NAME}
-            ${bt_LIBRARIES}
-        )
-        _get_folder("tests/lib" folder)
-        set_target_properties(${LIBRARY_NAME}
-            PROPERTIES 
-                FOLDER "${folder}"
-        )
+    add_library(${LIBRARY_NAME}
+        SHARED
+        ${bt_CPPFILES}
+    )
+    _pxr_target_link_libraries(${LIBRARY_NAME}
+        ${bt_LIBRARIES}
+    )
+    _get_folder("tests/lib" folder)
+    set_target_properties(${LIBRARY_NAME}
+        PROPERTIES 
+            FOLDER "${folder}"
+    )
 
-        # Find libraries under the install prefix, which has the core USD
-        # libraries.
-        _pxr_init_rpath(rpath "tests/lib")
-        _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
-        _pxr_install_rpath(rpath ${LIBRARY_NAME})
+    # Find libraries under the install prefix, which has the core USD
+    # libraries.
+    _pxr_init_rpath(rpath "tests/lib")
+    _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
+    _pxr_install_rpath(rpath ${LIBRARY_NAME})
 
-        if (NOT bt_SOURCE_DIR)
-            set(bt_SOURCE_DIR testenv)
-        endif()
-        set(testPlugInfoSrcPath ${bt_SOURCE_DIR}/${LIBRARY_NAME}_plugInfo.json)
+    if (NOT bt_SOURCE_DIR)
+        set(bt_SOURCE_DIR testenv)
+    endif()
+    set(testPlugInfoSrcPath ${bt_SOURCE_DIR}/${LIBRARY_NAME}_plugInfo.json)
 
-        if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${testPlugInfoSrcPath}")
-            set(TEST_PLUG_INFO_RESOURCE_PATH "Resources")
-            set(TEST_PLUG_INFO_ROOT "..")
-            set(LIBRARY_FILE "${CMAKE_SHARED_LIBRARY_PREFIX}${LIBRARY_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${testPlugInfoSrcPath}")
+        set(TEST_PLUG_INFO_RESOURCE_PATH "Resources")
+        set(TEST_PLUG_INFO_ROOT "..")
+        set(LIBRARY_FILE "${CMAKE_SHARED_LIBRARY_PREFIX}${LIBRARY_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
-            set(testPlugInfoLibDir "tests/${bt_INSTALL_PREFIX}/lib/${LIBRARY_NAME}")
-            set(testPlugInfoResourceDir "${testPlugInfoLibDir}/${TEST_PLUG_INFO_RESOURCE_PATH}")
-            set(testPlugInfoPath "${CMAKE_BINARY_DIR}/${testPlugInfoResourceDir}/plugInfo.json")
+        set(testPlugInfoLibDir "tests/${bt_INSTALL_PREFIX}/lib/${LIBRARY_NAME}")
+        set(testPlugInfoResourceDir "${testPlugInfoLibDir}/${TEST_PLUG_INFO_RESOURCE_PATH}")
+        set(testPlugInfoPath "${PROJECT_BINARY_DIR}/${testPlugInfoResourceDir}/plugInfo.json")
 
-            file(RELATIVE_PATH 
-                TEST_PLUG_INFO_LIBRARY_PATH
-                "${CMAKE_INSTALL_PREFIX}/${testPlugInfoLibDir}"
-                "${CMAKE_INSTALL_PREFIX}/tests/lib/${LIBRARY_FILE}")
+        file(RELATIVE_PATH 
+            TEST_PLUG_INFO_LIBRARY_PATH
+            "${CMAKE_INSTALL_PREFIX}/${testPlugInfoLibDir}"
+            "${CMAKE_INSTALL_PREFIX}/tests/lib/${LIBRARY_FILE}")
 
-            configure_file("${testPlugInfoSrcPath}" "${testPlugInfoPath}")
-            # XXX -- We shouldn't have to install to run tests.
-            install(
-                FILES ${testPlugInfoPath}
-                DESTINATION ${testPlugInfoResourceDir})
-        endif()
-
-        # We always want this test to build after the package it's under, even if
-        # it doesn't link directly. This ensures that this test is able to include
-        # headers from its parent package.
-        add_dependencies(${LIBRARY_NAME} ${PXR_PACKAGE})
-
-        # Test libraries can include the private headers of their parent PXR_PACKAGE
-        # library
-        target_include_directories(${LIBRARY_NAME}
-            PRIVATE $<TARGET_PROPERTY:${PXR_PACKAGE},INCLUDE_DIRECTORIES>
-        )
-
+        configure_file("${testPlugInfoSrcPath}" "${testPlugInfoPath}")
         # XXX -- We shouldn't have to install to run tests.
         install(
-            TARGETS ${LIBRARY_NAME}
-            LIBRARY DESTINATION "tests/lib"
-            ARCHIVE DESTINATION "tests/lib"
-            RUNTIME DESTINATION "tests/lib"
-        )
+            FILES ${testPlugInfoPath}
+            DESTINATION ${testPlugInfoResourceDir})
     endif()
+
+    # We always want this test to build after the package it's under, even if
+    # it doesn't link directly. This ensures that this test is able to include
+    # headers from its parent package.
+    add_dependencies(${LIBRARY_NAME} ${PXR_PACKAGE})
+
+    # Test libraries can include the private headers of their parent PXR_PACKAGE
+    # library
+    target_include_directories(${LIBRARY_NAME}
+        PRIVATE $<TARGET_PROPERTY:${PXR_PACKAGE},INCLUDE_DIRECTORIES>
+    )
+
+    # XXX -- We shouldn't have to install to run tests.
+    install(
+        TARGETS ${LIBRARY_NAME}
+        LIBRARY DESTINATION "tests/lib"
+        ARCHIVE DESTINATION "tests/lib"
+        RUNTIME DESTINATION "tests/lib"
+    )
 endfunction() # pxr_build_test_shared_lib
 
 function(pxr_build_test TEST_NAME)
-    if (PXR_BUILD_TESTS)
-        cmake_parse_arguments(bt
-            "" ""
-            "LIBRARIES;CPPFILES"
-            ${ARGN}
-        )
-
-        add_executable(${TEST_NAME}
-            ${bt_CPPFILES}
-        )
-
-        # Turn PIC ON otherwise ArchGetAddressInfo() on Linux may yield
-        # unexpected results.
-        _get_folder("tests/bin" folder)
-        set_target_properties(${TEST_NAME}
-            PROPERTIES 
-                FOLDER "${folder}"
-            	POSITION_INDEPENDENT_CODE ON
-        )
-        target_include_directories(${TEST_NAME}
-            PRIVATE $<TARGET_PROPERTY:${PXR_PACKAGE},INCLUDE_DIRECTORIES>
-        )
-        _pxr_target_link_libraries(${TEST_NAME}
-            ${bt_LIBRARIES}
-        )
-
-        # Find libraries under the install prefix, which has the core USD
-        # libraries.
-        _pxr_init_rpath(rpath "tests")
-        _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
-        _pxr_install_rpath(rpath ${TEST_NAME})
-
-        # XXX -- We shouldn't have to install to run tests.
-        install(TARGETS ${TEST_NAME}
-            RUNTIME DESTINATION "tests"
-        )
+    if (NOT PXR_BUILD_TESTS)
+        return()
     endif()
+
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
+        return()
+    endif()
+
+    cmake_parse_arguments(bt
+        "" ""
+        "LIBRARIES;CPPFILES"
+        ${ARGN}
+    )
+
+    add_executable(${TEST_NAME}
+        ${bt_CPPFILES}
+    )
+
+    # Turn PIC ON otherwise ArchGetAddressInfo() on Linux may yield
+    # unexpected results.
+    _get_folder("tests/bin" folder)
+    set_target_properties(${TEST_NAME}
+        PROPERTIES 
+            FOLDER "${folder}"
+        	POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(${TEST_NAME}
+        PRIVATE $<TARGET_PROPERTY:${PXR_PACKAGE},INCLUDE_DIRECTORIES>
+    )
+    _pxr_target_link_libraries(${TEST_NAME}
+        ${bt_LIBRARIES}
+    )
+
+    # Find libraries under the install prefix, which has the core USD
+    # libraries.
+    _pxr_init_rpath(rpath "tests")
+    _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
+    _pxr_install_rpath(rpath ${TEST_NAME})
+
+    # XXX -- We shouldn't have to install to run tests.
+    install(TARGETS ${TEST_NAME}
+        RUNTIME DESTINATION "tests"
+    )
 endfunction() # pxr_build_test
 
 function(pxr_test_scripts)
@@ -526,6 +581,12 @@ function(pxr_test_scripts)
     endif()
 
     if (NOT PXR_BUILD_TESTS)
+        return()
+    endif()
+
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
         return()
     endif()
 
@@ -541,195 +602,271 @@ function(pxr_test_scripts)
 endfunction() # pxr_test_scripts
 
 function(pxr_install_test_dir)
-    if (PXR_BUILD_TESTS)
-        cmake_parse_arguments(bt
-            "" 
-            "SRC;DEST"
-            ""
-            ${ARGN}
-        )
-
-        # XXX -- We shouldn't have to install to run tests.
-        install(
-            DIRECTORY ${bt_SRC}/
-            DESTINATION tests/ctest/${bt_DEST}
-        )
+    if (NOT PXR_BUILD_TESTS)
+        return()
     endif()
+
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
+        return()
+    endif()
+
+    cmake_parse_arguments(bt
+        "" 
+        "SRC;DEST"
+        ""
+        ${ARGN}
+    )
+
+    # XXX -- We shouldn't have to install to run tests.
+    install(
+        DIRECTORY ${bt_SRC}/
+        DESTINATION tests/ctest/${bt_DEST}
+    )
 endfunction() # pxr_install_test_dir
 
 function(pxr_register_test TEST_NAME)
-    if (PXR_BUILD_TESTS)
-        cmake_parse_arguments(bt
-            "RUN_SERIAL;PYTHON;REQUIRES_SHARED_LIBS;REQUIRES_PYTHON_MODULES" 
-            "CUSTOM_PYTHON;COMMAND;STDOUT_REDIRECT;STDERR_REDIRECT;DIFF_COMPARE;POST_COMMAND;POST_COMMAND_STDOUT_REDIRECT;POST_COMMAND_STDERR_REDIRECT;PRE_COMMAND;PRE_COMMAND_STDOUT_REDIRECT;PRE_COMMAND_STDERR_REDIRECT;FILES_EXIST;FILES_DONT_EXIST;CLEAN_OUTPUT;EXPECTED_RETURN_CODE;TESTENV"
-            "ENV;PRE_PATH;POST_PATH"
-            ${ARGN}
-        )
+    if (NOT PXR_BUILD_TESTS)
+        return()
+    endif()
 
-        # Discard tests that required shared libraries.
-        if(NOT TARGET shared_libs)
-            # Explicit requirement.  This is for C++ tests that dynamically
-            # load libraries linked against USD code.  These tests will have
-            # multiple copies of symbols and will likely re-execute
-            # ARCH_CONSTRUCTOR and registration functions, which will almost
-            # certainly cause problems.
-            if(bt_REQUIRES_SHARED_LIBS)
-                message(STATUS "Skipping test ${TEST_NAME}, shared libraries required")
-                return()
-            endif()
-        endif()
+    # If the package for this test does not have a target it must not be
+    # getting built, in which case we can skip building associated tests.
+    if (NOT TARGET ${PXR_PACKAGE})
+        return()
+    endif()
 
-        if(NOT TARGET python)
-            # Implicit requirement.  Python modules require shared USD
-            # libraries.  If the test runs python it's certainly going
-            # to load USD modules.  If the test uses C++ to load USD
-            # modules it tells us via REQUIRES_PYTHON_MODULES.
-            if(bt_PYTHON OR bt_CUSTOM_PYTHON OR bt_REQUIRES_PYTHON_MODULES)
-                message(STATUS "Skipping test ${TEST_NAME}, Python modules required")
-                return()
-            endif()
-        endif()
+    set(OPTIONS RUN_SERIAL PYTHON REQUIRES_SHARED_LIBS REQUIRES_PYTHON_MODULES PERCEPTUAL)
+    set(ONE_VALUE_ARGS
+            CUSTOM_PYTHON
+            COMMAND
+            STDOUT_REDIRECT STDERR_REDIRECT
+            POST_COMMAND POST_COMMAND_STDOUT_REDIRECT POST_COMMAND_STDERR_REDIRECT
+            PRE_COMMAND PRE_COMMAND_STDOUT_REDIRECT PRE_COMMAND_STDERR_REDIRECT
+            FILES_EXIST FILES_DONT_EXIST
+            CLEAN_OUTPUT
+            EXPECTED_RETURN_CODE
+            TESTENV
+            WARN WARN_PERCENT HARD_WARN FAIL FAIL_PERCENT HARD_FAIL)
+    set(MULTI_VALUE_ARGS DIFF_COMPARE IMAGE_DIFF_COMPARE ENV PRE_PATH POST_PATH)
 
-        # This harness is a filter which allows us to manipulate the test run, 
-        # e.g. by changing the environment, changing the expected return code, etc.
-        set(testWrapperCmd ${PROJECT_SOURCE_DIR}/cmake/macros/testWrapper.py --verbose)
+    cmake_parse_arguments(bt
+        "${OPTIONS}" "${ONE_VALUE_ARGS}" "${MULTI_VALUE_ARGS}"
+        ${ARGN}
+    )
 
-        if (bt_STDOUT_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --stdout-redirect=${bt_STDOUT_REDIRECT})
-        endif()
-
-        if (bt_STDERR_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --stderr-redirect=${bt_STDERR_REDIRECT})
-        endif()
-
-        if (bt_PRE_COMMAND_STDOUT_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --pre-command-stdout-redirect=${bt_PRE_COMMAND_STDOUT_REDIRECT})
-        endif()
-
-        if (bt_PRE_COMMAND_STDERR_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --pre-command-stderr-redirect=${bt_PRE_COMMAND_STDERR_REDIRECT})
-        endif()
-
-        if (bt_POST_COMMAND_STDOUT_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --post-command-stdout-redirect=${bt_POST_COMMAND_STDOUT_REDIRECT})
-        endif()
-
-        if (bt_POST_COMMAND_STDERR_REDIRECT)
-            set(testWrapperCmd ${testWrapperCmd} --post-command-stderr-redirect=${bt_POST_COMMAND_STDERR_REDIRECT})
-        endif()
-
-        # Not all tests will have testenvs, but if they do let the wrapper know so
-        # it can copy the testenv contents into the run directory. By default,
-        # assume the testenv has the same name as the test but allow it to be
-        # overridden by specifying TESTENV.
-        if (bt_TESTENV)
-            set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${bt_TESTENV})
-        else()
-            set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${TEST_NAME})
-        endif()
-
-        set(testWrapperCmd ${testWrapperCmd} --testenv-dir=${testenvDir})
-
-        if (bt_DIFF_COMPARE)
-            set(testWrapperCmd ${testWrapperCmd} --diff-compare=${bt_DIFF_COMPARE})
-
-            # For now the baseline directory is assumed by convention from the test
-            # name. There may eventually be cases where we'd want to specify it by
-            # an argument though.
-            set(baselineDir ${testenvDir}/baseline)
-            set(testWrapperCmd ${testWrapperCmd} --baseline-dir=${baselineDir})
-        endif()
-
-        if (bt_CLEAN_OUTPUT)
-            set(testWrapperCmd ${testWrapperCmd} --clean-output-paths=${bt_CLEAN_OUTPUT})
-        endif()
-
-        if (bt_FILES_EXIST)
-            set(testWrapperCmd ${testWrapperCmd} --files-exist=${bt_FILES_EXIST})
-        endif()
-
-        if (bt_FILES_DONT_EXIST)
-            set(testWrapperCmd ${testWrapperCmd} --files-dont-exist=${bt_FILES_DONT_EXIST})
-        endif()
-
-        if (bt_PRE_COMMAND)
-            set(testWrapperCmd ${testWrapperCmd} --pre-command=${bt_PRE_COMMAND})
-        endif()
-
-        if (bt_POST_COMMAND)
-            set(testWrapperCmd ${testWrapperCmd} --post-command=${bt_POST_COMMAND})
-        endif()
-
-        if (bt_EXPECTED_RETURN_CODE)
-            set(testWrapperCmd ${testWrapperCmd} --expected-return-code=${bt_EXPECTED_RETURN_CODE})
-        endif()
-
-        if (bt_ENV)
-            foreach(env ${bt_ENV})
-                set(testWrapperCmd ${testWrapperCmd} --env-var=${env})
-            endforeach()
-        endif()
-
-        if (bt_PRE_PATH)
-            foreach(path ${bt_PRE_PATH})
-                set(testWrapperCmd ${testWrapperCmd} --pre-path=${path})
-            endforeach()
-        endif()
-
-        if (bt_POST_PATH)
-            foreach(path ${bt_POST_PATH})
-                set(testWrapperCmd ${testWrapperCmd} --post-path=${path})
-            endforeach()
-        endif()
-        
-        # If we're building static libraries, the C++ tests that link against
-        # these libraries will look for resource files in the "usd" subdirectory
-        # relative to where the tests are installed. However, the build installs
-        # these files in the "lib" directory where the libraries are installed. 
-        #
-        # We don't want to copy these resource files for each test, so instead
-        # we set the PXR_PLUGINPATH_NAME env var to point to the "lib/usd"
-        # directory where these files are installed.
-        if (NOT TARGET shared_libs)
-            set(_plugSearchPathEnvName "PXR_PLUGINPATH_NAME")
-            if (PXR_OVERRIDE_PLUGINPATH_NAME)
-                set(_plugSearchPathEnvName ${PXR_OVERRIDE_PLUGINPATH_NAME})
-            endif()
-
-            set(testWrapperCmd ${testWrapperCmd} --env-var=${_plugSearchPathEnvName}=${CMAKE_INSTALL_PREFIX}/lib/usd)
-        endif()
-
-        # Ensure that Python imports the Python files built by this build.
-        # On Windows convert backslash to slash and don't change semicolons
-        # to colons.
-        set(_testPythonPath "${CMAKE_INSTALL_PREFIX}/lib/python;$ENV{PYTHONPATH}")
-        if(WIN32)
-            string(REGEX REPLACE "\\\\" "/" _testPythonPath "${_testPythonPath}")
-        else()
-            string(REPLACE ";" ":" _testPythonPath "${_testPythonPath}")
-        endif()
-
-        # Ensure we run with the appropriate python executable.
-        if (bt_CUSTOM_PYTHON)
-            set(testCmd "${bt_CUSTOM_PYTHON} ${bt_COMMAND}")
-        elseif (bt_PYTHON)
-            set(testCmd "${PYTHON_EXECUTABLE} ${bt_COMMAND}")
-        else()
-            set(testCmd "${bt_COMMAND}")
-        endif()
-
-        add_test(
-            NAME ${TEST_NAME}
-            COMMAND ${PYTHON_EXECUTABLE} ${testWrapperCmd}
-                    "--env-var=PYTHONPATH=${_testPythonPath}" ${testCmd}
-        )
-
-        # But in some cases, we need to pass cmake properties directly to cmake
-        # run_test, rather than configuring the environment
-        if (bt_RUN_SERIAL)
-            set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    # Discard tests that required shared libraries.
+    if(NOT TARGET shared_libs)
+        # Explicit requirement.  This is for C++ tests that dynamically
+        # load libraries linked against USD code.  These tests will have
+        # multiple copies of symbols and will likely re-execute
+        # ARCH_CONSTRUCTOR and registration functions, which will almost
+        # certainly cause problems.
+        if(bt_REQUIRES_SHARED_LIBS)
+            message(STATUS "Skipping test ${TEST_NAME}, shared libraries required")
+            return()
         endif()
     endif()
+
+    if(NOT TARGET python)
+        # Implicit requirement.  Python modules require shared USD
+        # libraries.  If the test runs python it's certainly going
+        # to load USD modules.  If the test uses C++ to load USD
+        # modules it tells us via REQUIRES_PYTHON_MODULES.
+        if(bt_PYTHON OR bt_CUSTOM_PYTHON OR bt_REQUIRES_PYTHON_MODULES)
+            message(STATUS "Skipping test ${TEST_NAME}, Python modules required")
+            return()
+        endif()
+    endif()
+
+    # This harness is a filter which allows us to manipulate the test run, 
+    # e.g. by changing the environment, changing the expected return code, etc.
+    set(testWrapperCmd ${PROJECT_SOURCE_DIR}/cmake/macros/testWrapper.py --verbose)
+
+    if (bt_STDOUT_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --stdout-redirect=${bt_STDOUT_REDIRECT})
+    endif()
+
+    if (bt_STDERR_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --stderr-redirect=${bt_STDERR_REDIRECT})
+    endif()
+
+    if (bt_PRE_COMMAND_STDOUT_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --pre-command-stdout-redirect=${bt_PRE_COMMAND_STDOUT_REDIRECT})
+    endif()
+
+    if (bt_PRE_COMMAND_STDERR_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --pre-command-stderr-redirect=${bt_PRE_COMMAND_STDERR_REDIRECT})
+    endif()
+
+    if (bt_POST_COMMAND_STDOUT_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --post-command-stdout-redirect=${bt_POST_COMMAND_STDOUT_REDIRECT})
+    endif()
+
+    if (bt_POST_COMMAND_STDERR_REDIRECT)
+        set(testWrapperCmd ${testWrapperCmd} --post-command-stderr-redirect=${bt_POST_COMMAND_STDERR_REDIRECT})
+    endif()
+
+    # Not all tests will have testenvs, but if they do let the wrapper know so
+    # it can copy the testenv contents into the run directory. By default,
+    # assume the testenv has the same name as the test but allow it to be
+    # overridden by specifying TESTENV.
+    if (bt_TESTENV)
+        set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${bt_TESTENV})
+    else()
+        set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${TEST_NAME})
+    endif()
+
+    set(testWrapperCmd ${testWrapperCmd} --testenv-dir=${testenvDir})
+
+    if (bt_DIFF_COMPARE)
+        foreach(compareFile ${bt_DIFF_COMPARE})
+            set(testWrapperCmd ${testWrapperCmd} --diff-compare=${compareFile})
+        endforeach()
+    endif()
+
+    if (bt_IMAGE_DIFF_COMPARE)
+        if (IMAGE_DIFF_TOOL)
+            foreach (compareFile ${bt_IMAGE_DIFF_COMPARE})
+                set(testWrapperCmd ${testWrapperCmd} --image-diff-compare=${compareFile})
+            endforeach ()
+
+            if (bt_WARN)
+                set(testWrapperCmd ${testWrapperCmd} --warn=${bt_WARN})
+            endif()
+
+            if (bt_WARN_PERCENT)
+                set(testWrapperCmd ${testWrapperCmd} --warnpercent=${bt_WARN_PERCENT})
+            endif()
+
+            if (bt_HARD_WARN)
+                set(testWrapperCmd ${testWrapperCmd} --hardwarn=${bt_HARD_WARN})
+            endif()
+
+            if (bt_FAIL)
+                set(testWrapperCmd ${testWrapperCmd} --fail=${bt_FAIL})
+            endif()
+
+            if (bt_FAIL_PERCENT)
+                set(testWrapperCmd ${testWrapperCmd} --failpercent=${bt_FAIL_PERCENT})
+            endif()
+
+            if (bt_HARD_FAIL)
+                set(testWrapperCmd ${testWrapperCmd} --hardfail=${bt_HARD_FAIL})
+            endif()
+
+            if(bt_PERCEPTUAL)
+                set(testWrapperCmd ${testWrapperCmd} --perceptual)
+            endif()
+
+            # Make sure to add the image diff tool to the PATH so
+            # it can be easily found within the testWrapper
+            get_filename_component(IMAGE_DIFF_TOOL_PATH ${IMAGE_DIFF_TOOL} DIRECTORY)
+            set(testWrapperCmd ${testWrapperCmd} --post-path=${IMAGE_DIFF_TOOL_PATH})
+        endif()
+    endif()
+
+    if (bt_DIFF_COMPARE OR bt_IMAGE_DIFF_COMPARE)
+        # Common settings we only want to set once if either is used
+
+        # For now the baseline directory is assumed by convention from the test
+        # name. There may eventually be cases where we'd want to specify it by
+        # an argument though.
+        set(baselineDir ${testenvDir}/baseline)
+        set(testWrapperCmd ${testWrapperCmd} --baseline-dir=${baselineDir})
+
+        # <PXR_CTEST_RUN_ID> will be set by CTestCustom.cmake, and then
+        # expanded by testWrapper.py
+        set(failuresDir ${PROJECT_BINARY_DIR}/Testing/Failed-Diffs/<PXR_CTEST_RUN_ID>/${TEST_NAME})
+        set(testWrapperCmd ${testWrapperCmd} --failures-dir=${failuresDir})
+    endif()
+
+    if (bt_CLEAN_OUTPUT)
+        set(testWrapperCmd ${testWrapperCmd} --clean-output-paths=${bt_CLEAN_OUTPUT})
+    endif()
+
+    if (bt_FILES_EXIST)
+        set(testWrapperCmd ${testWrapperCmd} --files-exist=${bt_FILES_EXIST})
+    endif()
+
+    if (bt_FILES_DONT_EXIST)
+        set(testWrapperCmd ${testWrapperCmd} --files-dont-exist=${bt_FILES_DONT_EXIST})
+    endif()
+
+    if (bt_PRE_COMMAND)
+        set(testWrapperCmd ${testWrapperCmd} --pre-command=${bt_PRE_COMMAND})
+    endif()
+
+    if (bt_POST_COMMAND)
+        set(testWrapperCmd ${testWrapperCmd} --post-command=${bt_POST_COMMAND})
+    endif()
+
+    if (bt_EXPECTED_RETURN_CODE)
+        set(testWrapperCmd ${testWrapperCmd} --expected-return-code=${bt_EXPECTED_RETURN_CODE})
+    endif()
+
+    if (bt_ENV)
+        foreach(env ${bt_ENV})
+            set(testWrapperCmd ${testWrapperCmd} --env-var=${env})
+        endforeach()
+    endif()
+
+    if (bt_PRE_PATH)
+        foreach(path ${bt_PRE_PATH})
+            set(testWrapperCmd ${testWrapperCmd} --pre-path=${path})
+        endforeach()
+    endif()
+
+    if (bt_POST_PATH)
+        foreach(path ${bt_POST_PATH})
+            set(testWrapperCmd ${testWrapperCmd} --post-path=${path})
+        endforeach()
+    endif()
+        
+    # If we're building static libraries, the C++ tests that link against
+    # these libraries will look for resource files in the "usd" subdirectory
+    # relative to where the tests are installed. However, the build installs
+    # these files in the "lib" directory where the libraries are installed. 
+    #
+    # We don't want to copy these resource files for each test, so instead
+    # we set the PXR_PLUGINPATH_NAME env var to point to the "lib/usd"
+    # directory where these files are installed.
+    if (NOT TARGET shared_libs)
+        set(testWrapperCmd ${testWrapperCmd} --env-var=${PXR_PLUGINPATH_NAME}=${CMAKE_INSTALL_PREFIX}/lib/usd)
+    endif()
+
+    # Ensure that Python imports the Python files built by this build.
+    # On Windows convert backslash to slash and don't change semicolons
+    # to colons.
+    set(_testPythonPath "${CMAKE_INSTALL_PREFIX}/lib/python;$ENV{PYTHONPATH}")
+    if(WIN32)
+        string(REGEX REPLACE "\\\\" "/" _testPythonPath "${_testPythonPath}")
+    else()
+        string(REPLACE ";" ":" _testPythonPath "${_testPythonPath}")
+    endif()
+
+    # Ensure we run with the appropriate python executable.
+    if (bt_CUSTOM_PYTHON)
+        set(testCmd "${bt_CUSTOM_PYTHON} ${bt_COMMAND}")
+    elseif (bt_PYTHON)
+        set(testCmd "${PYTHON_EXECUTABLE} ${bt_COMMAND}")
+    else()
+        set(testCmd "${bt_COMMAND}")
+    endif()
+
+    add_test(
+        NAME ${TEST_NAME}
+        COMMAND ${PYTHON_EXECUTABLE} ${testWrapperCmd}
+                "--env-var=PYTHONPATH=${_testPythonPath}" ${testCmd}
+    )
+
+    # But in some cases, we need to pass cmake properties directly to cmake
+    # run_test, rather than configuring the environment
+    if (bt_RUN_SERIAL)
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
 endfunction() # pxr_register_test
 
 function(pxr_setup_plugins)
@@ -790,40 +927,14 @@ function(pxr_add_extra_plugins PLUGIN_AREAS)
     set(PXR_EXTRA_PLUGINS "${PXR_EXTRA_PLUGINS}" CACHE INTERNAL "${help}")
 endfunction() # pxr_setup_third_plugins
 
-function(pxr_katana_nodetypes NODE_TYPES)
-    set(installDir ${PXR_INSTALL_SUBDIR}/plugin/Plugins/NodeTypes)
-
-    set(pyFiles "")
-    set(importLines "")
-
-    foreach (nodeType ${NODE_TYPES})
-        list(APPEND pyFiles ${nodeType}.py)
-        set(importLines "import ${nodeType}\n")
-    endforeach()
-
-    install(
-        PROGRAMS ${pyFiles}
-        DESTINATION ${installDir}
-    )
-
-    # Install a __init__.py that imports all the known node types
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated_NodeTypes_init.py"
-         "${importLines}")
-    install(
-        FILES "${CMAKE_CURRENT_BINARY_DIR}/generated_NodeTypes_init.py"
-        DESTINATION "${installDir}"
-        RENAME "__init__.py"
-    )
-endfunction() # pxr_katana_nodetypes
-
 function(pxr_toplevel_prologue)
     # Generate a namespace declaration header, pxr.h, at the top level of
     # pxr at configuration time.
-    configure_file(${CMAKE_SOURCE_DIR}/pxr/pxr.h.in
-        ${CMAKE_BINARY_DIR}/include/pxr/pxr.h     
+    configure_file(${PROJECT_SOURCE_DIR}/pxr/pxr.h.in
+        ${PROJECT_BINARY_DIR}/include/pxr/pxr.h     
     )  
     install(
-        FILES ${CMAKE_BINARY_DIR}/include/pxr/pxr.h
+        FILES ${PROJECT_BINARY_DIR}/include/pxr/pxr.h
         DESTINATION include/pxr
     )
 
@@ -886,14 +997,17 @@ function(pxr_toplevel_prologue)
             # Our shared library.
             add_library(usd_ms SHARED "${CMAKE_CURRENT_BINARY_DIR}/usd_ms.cpp")
             _get_folder("" folder)
+            _get_library_prefix(libPrefix)
             set_target_properties(usd_ms
                 PROPERTIES
                     FOLDER "${folder}"
-                    PREFIX "${PXR_LIB_PREFIX}"
+                    PREFIX "${libPrefix}"
+                    IMPORT_PREFIX "${libPrefix}"
             )
             _get_install_dir("lib" libInstallPrefix)
             install(
                 TARGETS usd_ms
+                EXPORT pxrTargets
                 LIBRARY DESTINATION ${libInstallPrefix}
                 ARCHIVE DESTINATION ${libInstallPrefix}
                 RUNTIME DESTINATION ${libInstallPrefix}
@@ -929,20 +1043,21 @@ function(pxr_toplevel_epilogue)
         # that we carefully avoid adding the usd_m target itself by using
         # TARGET_FILE.  Linking the usd_m target would link usd_m and
         # everything it links to.
+        
         if(MSVC)
             target_link_libraries(usd_ms
                 PRIVATE
-                    -WHOLEARCHIVE:$<TARGET_FILE:usd_m>
+                    -WHOLEARCHIVE:$<BUILD_INTERFACE:$<TARGET_FILE:usd_m>>
             )
         elseif(CMAKE_COMPILER_IS_GNUCXX)
             target_link_libraries(usd_ms
                 PRIVATE
-                    -Wl,--whole-archive $<TARGET_FILE:usd_m> -Wl,--no-whole-archive
+                    -Wl,--whole-archive $<BUILD_INTERFACE:$<TARGET_FILE:usd_m>> -Wl,--no-whole-archive
             )
         elseif("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
             target_link_libraries(usd_ms
                 PRIVATE
-                    -Wl,-force_load $<TARGET_FILE:usd_m>
+                    -Wl,-force_load $<BUILD_INTERFACE:$<TARGET_FILE:usd_m>>
             )
         endif()
 
@@ -955,11 +1070,16 @@ function(pxr_toplevel_epilogue)
         # usd_m target.
         target_compile_definitions(usd_ms
             PUBLIC
-                $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>
+                $<BUILD_INTERFACE:$<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>>
         )
         target_include_directories(usd_ms
             PUBLIC
-                $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>
+                $<BUILD_INTERFACE:$<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>>
+        )
+        target_include_directories(usd_ms
+            SYSTEM
+            PUBLIC
+                $<BUILD_INTERFACE:$<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>>
         )
         foreach(lib ${PXR_OBJECT_LIBS})
             get_property(libs TARGET ${lib} PROPERTY INTERFACE_LINK_LIBRARIES)
@@ -1019,11 +1139,13 @@ function(pxr_monolithic_epilogue)
     add_library(usd_m STATIC "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp" ${objects})
 
     _get_folder("" folder)
+    _get_library_prefix(libPrefix)
     set_target_properties(usd_m
         PROPERTIES
             FOLDER "${folder}"
             POSITION_INDEPENDENT_CODE ON
-            PREFIX "${PXR_LIB_PREFIX}"
+            PREFIX "${libPrefix}"
+            IMPORT_PREFIX "${libPrefix}"
     )
 
     # Adding $<TARGET_OBJECTS:foo> will not bring along compile
@@ -1037,6 +1159,11 @@ function(pxr_monolithic_epilogue)
         target_include_directories(usd_m
             PUBLIC
                 $<TARGET_PROPERTY:${lib},INTERFACE_INCLUDE_DIRECTORIES>
+        )
+        target_include_directories(usd_m
+            SYSTEM
+            PUBLIC
+                $<TARGET_PROPERTY:${lib},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>
         )
 
         get_property(libs TARGET ${lib} PROPERTY INTERFACE_LINK_LIBRARIES)
@@ -1057,6 +1184,7 @@ function(pxr_monolithic_epilogue)
     set(export "${export}set_property(TARGET usd_m PROPERTY IMPORTED_LOCATION $<TARGET_FILE:usd_m>)\n")
     set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_COMPILE_DEFINITIONS $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>)\n")
     set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>)\n")
+    set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)\n")
     set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_LINK_LIBRARIES $<TARGET_PROPERTY:usd_m,INTERFACE_LINK_LIBRARIES>)\n")
     file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
@@ -1072,6 +1200,7 @@ function(pxr_monolithic_epilogue)
     set(export "${export}#set_property(TARGET usd_ms PROPERTY IMPORTED_IMPLIB FIXME)\n")
     set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_COMPILE_DEFINITIONS $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>)\n")
     set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>)\n")
+    set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)\n")
     set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_LINK_LIBRARIES $<TARGET_PROPERTY:usd_m,INTERFACE_LINK_LIBRARIES>)\n")
     file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
@@ -1084,12 +1213,12 @@ function(pxr_monolithic_epilogue)
             usd_m
         COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_CURRENT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
-            "${CMAKE_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
+            "${PROJECT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
         COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_CURRENT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
-            "${CMAKE_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
-        COMMAND ${CMAKE_COMMAND} -E echo Export file: ${CMAKE_BINARY_DIR}/usd-targets-$<CONFIG>.cmake
-        COMMAND ${CMAKE_COMMAND} -E echo Import file: ${CMAKE_BINARY_DIR}/usd-imports-$<CONFIG>.cmake
+            "${PROJECT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
+        COMMAND ${CMAKE_COMMAND} -E echo Export file: ${PROJECT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake
+        COMMAND ${CMAKE_COMMAND} -E echo Import file: ${PROJECT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake
     )
 endfunction() # pxr_monolithic_epilogue
 
@@ -1112,3 +1241,41 @@ function(pxr_core_epilogue)
         set(_building_core FALSE PARENT_SCOPE)
     endif()
 endfunction() # pxr_core_epilogue
+
+function(pxr_tests_prologue)
+    add_custom_target(
+        test_setup
+        ALL
+        DEPENDS "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+    )
+    add_custom_command(
+        OUTPUT "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/defaults/CTestCustom.cmake"
+            "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/defaults/CTestCustom.cmake"
+        COMMENT "Copying CTestCustom.cmake"
+    )
+endfunction() # pxr_tests_prologue
+
+function(pxr_build_python_documentation)
+    set(BUILT_XML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_xml")
+    set(CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT 
+       "${PROJECT_SOURCE_DIR}/docs/python/convertDoxygen.py")
+    set(INSTALL_PYTHON_PXR_ROOT "${CMAKE_INSTALL_PREFIX}/lib/python/pxr")
+
+    # Get the list of pxr python modules and run a install command for each
+    get_property(pxrPythonModules GLOBAL PROPERTY PXR_PYTHON_MODULES)
+    # Create string of module names, joined with ","
+    string(REPLACE ";" "," pxrPythonModulesStr "${pxrPythonModules}")
+    # Run convertDoxygen on the module list, setting PYTHONPATH 
+    # to the install path for the USD Python modules
+    install(CODE "execute_process(\
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/cmake \
+        COMMAND ${PYTHON_EXECUTABLE} ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} \
+        --package pxr --module ${pxrPythonModulesStr} \
+        --inputIndex ${BUILT_XML_DOCS}/index.xml \
+        --pythonPath ${CMAKE_INSTALL_PREFIX}/lib/python \
+        --output ${INSTALL_PYTHON_PXR_ROOT})")
+
+endfunction() # pxr_build_python_documentation
