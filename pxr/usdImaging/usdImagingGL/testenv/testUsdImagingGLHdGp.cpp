@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/base/gf/bbox3d.h"
@@ -371,6 +354,103 @@ int main(int argc, char *argv[])
         std::cout << "...OK" << std::endl;
 
     }
+
+
+    SdfPath dependsOnChildNamesProcPrimPath("/World/dependsOnChildNamesProc");
+    SdfPath resultPath =
+        dependsOnChildNamesProcPrimPath.AppendChild(TfToken("myResult"));
+
+    TfToken childNamesToken("childNames");
+    HdDataSourceLocator childNamesLocator(childNamesToken);
+
+    //-------------------------------------------------------------------------
+    // confirm initial state of dependsOnChildNamesProc
+    {
+        std::cout << "confirming initial child count of childNames data source "
+            << "of: " << resultPath << "..." <<std::endl;
+
+        if (auto childNamesDs =
+                HdContainerDataSource::Cast(HdContainerDataSource::Get(
+                    sceneIndex->GetPrim(resultPath
+                        ).dataSource, childNamesLocator))) {
+
+            TF_AXIOM(childNamesDs->GetNames().size() == 3);
+
+            std::cout << "...OK" << std::endl;
+
+        } else {
+            std::cerr << "...couldn't find childNames data source" << std::endl;
+            return -1;
+        }
+    }
+
+    //-------------------------------------------------------------------------
+    // deactivate/active target prim children and confirm proc prim is dirtied
+    {
+
+        std::cout << "testing dependency of " << resultPath
+            << " following deactivation of targetPrim child..." << std::endl;
+
+        observer.Clear();
+
+        UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/childNameTest/C"));
+        prim.SetActive(false);
+
+        engine->Render(stage->GetPseudoRoot(), params);
+
+        bool resultPrimDirtied = false;
+
+        for (const auto &e : observer.GetEvents()) {
+            if (e.eventType ==
+                        _RecordingSceneIndexObserver::EventType_PrimDirtied) {
+                if (e.primPath == resultPath) {
+                    resultPrimDirtied = true;
+                    break;
+                }
+            }
+        }
+
+        TF_AXIOM(resultPrimDirtied);
+        std::cout << "...OK" << std::endl;
+
+        size_t childCount = 0;
+        if (auto childNamesDs =
+                HdContainerDataSource::Cast(HdContainerDataSource::Get(
+                    sceneIndex->GetPrim(resultPath
+                        ).dataSource, childNamesLocator))) {
+
+            childCount = childNamesDs->GetNames().size();
+        }
+
+        std::cout << "confirming childCount updated..." << std::endl;
+        TF_AXIOM(childCount == 2);
+        std::cout << "...OK" << std::endl;
+
+        std::cout << "testing dependency of " << resultPath
+            << " following reactivation of targetPrim child..." << std::endl;
+
+        observer.Clear();
+        prim.SetActive(true);
+
+        engine->Render(stage->GetPseudoRoot(), params);
+
+        resultPrimDirtied = false;
+
+        for (const auto &e : observer.GetEvents()) {
+            if (e.eventType ==
+                        _RecordingSceneIndexObserver::EventType_PrimDirtied) {
+                if (e.primPath == resultPath) {
+                    resultPrimDirtied = true;
+                    break;
+                }
+            }
+        }
+
+        TF_AXIOM(resultPrimDirtied);
+        std::cout << "...OK" << std::endl;
+    }
+
+    //
 
 
     return EXIT_SUCCESS;

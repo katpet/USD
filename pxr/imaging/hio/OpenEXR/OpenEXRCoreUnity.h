@@ -1,5 +1,12 @@
+//
+// Copyright 2023 Pixar
+//
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
+//
+/// \file OpenEXRCoreUnity.h
 
-#include "OpenEXRCore/openexr_conf.h"
+#include "OpenEXRCore/openexr_config.h"
 
 #include "deflate/lib/lib_common.h"
 #include "deflate/common_defs.h"
@@ -12,6 +19,8 @@
 #include "deflate/lib/adler32.c"
 #include "deflate/lib/zlib_compress.c"
 #include "deflate/lib/zlib_decompress.c"
+
+#include "openexr-c.h"
 
 #include "OpenEXRCore/attributes.c"
 #include "OpenEXRCore/base.c"

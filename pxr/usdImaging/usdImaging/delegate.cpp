@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/delegate.h"
 
@@ -65,6 +48,7 @@
 #include "pxr/base/work/loops.h"
 
 #include "pxr/base/tf/envSetting.h"
+#include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/pyLock.h"
 #include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/ostreamMethods.h"
@@ -155,7 +139,6 @@ UsdImagingDelegate::~UsdImagingDelegate()
     index.RemoveSubtree(GetDelegateID(), this);
 
     _refineLevelMap.clear();
-    _pickablesMap.clear();
     _hdPrimInfoMap.clear();
     _dependencyInfo.clear();
     _adapterMap.clear();
@@ -232,10 +215,11 @@ UsdImagingDelegate::_AdapterLookup(UsdPrim const& prim, bool ignoreInstancing)
     //    threads.
 
     TfToken adapterKey;
-    if (_displayUnloadedPrimsWithBounds && !prim.IsLoaded()) {
-        adapterKey = UsdImagingAdapterKeyTokens->drawModeAdapterKey;
-    } else if (!ignoreInstancing && prim.IsInstance()) {
+
+    if (!ignoreInstancing && prim.IsInstance()) {
         adapterKey = UsdImagingAdapterKeyTokens->instanceAdapterKey;
+    } else if (_displayUnloadedPrimsWithBounds && !prim.IsLoaded()) {
+        adapterKey = UsdImagingAdapterKeyTokens->drawModeAdapterKey;
     } else if (_hasDrawModeAdapter && _enableUsdDrawModes &&
                _IsDrawModeApplied(prim)) {
         adapterKey = UsdImagingAdapterKeyTokens->drawModeAdapterKey;
@@ -879,10 +863,13 @@ UsdImagingDelegate::SetTime(UsdTimeCode time)
     // Mark varying attributes as dirty.
     if (_timeVaryingPrimCacheValid) {
         for (SdfPath const& path : _timeVaryingPrimCache) {
-            _HdPrimInfo &primInfo = _hdPrimInfoMap[path];
-            primInfo.adapter->MarkDirty(primInfo.usdPrim,
+            _HdPrimInfoMap::iterator it = _hdPrimInfoMap.find(path);
+            if (it == _hdPrimInfoMap.end()) {
+                continue;
+            }
+            it->second.adapter->MarkDirty(it->second.usdPrim,
                                         path,
-                                        primInfo.timeVaryingBits,
+                                        it->second.timeVaryingBits,
                                         &indexProxy);
         }
     } else {
@@ -1194,7 +1181,7 @@ _HasConnectionChanged(const SdfPath &path, const PathRange &pathRange)
 {
     PathRange::const_iterator itr = pathRange.find(path);
     if (itr != pathRange.end()) {
-        for (const SdfChangeList::Entry *entry : itr.base()->second) {
+        for (const SdfChangeList::Entry *entry : itr.GetBase()->second) {
             if (entry->flags.didChangeAttributeConnection) {
                 return true;
             }
@@ -1229,6 +1216,18 @@ UsdImagingDelegate::_OnUsdObjectsChanged(
         } else {
             _usdPathsToResync.emplace_back(path);
         }
+    }
+
+    // These paths represent the root of subtrees containing asset path values
+    // that may now resolve to different locations than previously, even though
+    // the authored values themselves have not changed. We currently do not the
+    // precise locations of asset path values we have pulled on, so we can't do
+    // a sparse invalidation. Instead, we treat this as a full resync to ensure
+    // anything that may depend on affected asset paths gets repopulated.
+    const PathRange assetPathsToResync =
+        notice.GetResolvedAssetPathsResyncedPaths();
+    for (const auto& path : assetPathsToResync) {
+        _usdPathsToResync.emplace_back(path);
     }
 
     // These paths represent objects which have been modified in a 
@@ -1598,7 +1597,8 @@ UsdImagingDelegate::_RefreshUsdObject(
             _ResyncUsdPrim(usdPrimPath, cache, proxy, true);
             resyncNeeded = true;
 
-        } else if (usdPrim && usdPrim.IsA<UsdShadeShader>()) {
+        } else if (usdPrim && (usdPrim.IsA<UsdShadeShader>() || 
+                               usdPrim.IsA<UsdShadeNodeGraph>())) {
             // Shader edits get forwarded to parent material. Note if the
             // material is native instanced, we need to stop the traversal
             // at the prototype, since the corresponding instance prim will be
@@ -1726,29 +1726,6 @@ UsdImagingDelegate::_UpdateSingleValue(SdfPath const& cachePath,
 }
 
 void
-UsdImagingDelegate::ClearPickabilityMap()
-{
-    _pickablesMap.clear();
-}
-
-void 
-UsdImagingDelegate::SetPickability(SdfPath const& path, bool pickable)
-{
-    // XXX(UsdImagingPaths): SetPickability takes a usdPath but we
-    // use it directly as a cachePath here; should we route that through
-    // a prim adapter?
-    SdfPath const& cachePath = path;
-
-    _pickablesMap[ConvertCachePathToIndexPath(cachePath)] = pickable;
-}
-
-PickabilityMap
-UsdImagingDelegate::GetPickabilityMap() const
-{
-    return _pickablesMap; 
-}
-
-void
 UsdImagingDelegate::_MarkRenderTagsDirty()
 {
     UsdImagingIndexProxy indexProxy(this, nullptr);
@@ -1868,8 +1845,8 @@ UsdImagingDelegate::SetSceneLightsEnabled(bool enable)
             const SdfPath &cachePath = pair.first;
             _HdPrimInfo &primInfo = pair.second;
             if (TF_VERIFY(primInfo.adapter, "%s", cachePath.GetText())) {
-                primInfo.adapter->MarkLightParamsDirty(primInfo.usdPrim, 
-                                                       cachePath, &indexProxy);
+                primInfo.adapter->MarkDirty(primInfo.usdPrim, cachePath, 
+                    HdLight::DirtyParams | HdLight::DirtyResource, &indexProxy);
             }
         }
     }
@@ -2340,8 +2317,8 @@ UsdImagingDelegate::SetRigidXformOverrides(
     if (_rigidXformOverrides == rigidXformOverrides) {
         return;
     }
-
-    TfHashMap<UsdPrim, GfMatrix4d, boost::hash<UsdPrim> > overridesToUpdate;
+    
+    UsdImaging_XformCache::ValueOverridesMap overridesToUpdate;
 
     // Compute the set of overrides to update and update their values in the 
     // inherited xform cache.
@@ -2796,6 +2773,23 @@ VtArray<TfToken>
 UsdImagingDelegate::GetCategories(SdfPath const &id)
 {
     SdfPath cachePath = ConvertIndexPathToCachePath(id);
+    
+    // XXX: We must not ask the collection cache about instancer prototypes.
+    // When instancer prototypes had property paths, the collection cache
+    // would return an empty list for them. Now that they have prim paths,
+    // the collection cache will return the list of collections inherited by
+    // the prototype from the first instance. If subsequent instances belong to
+    // a conflicting set of collections, we get incorrect results. Since the
+    // collection cache has no way to identify prototype paths, we must do the
+    // check here where we have access to the adapter. Instances will receive
+    // the correct list of collections via GetInstanceCategories().
+    _HdPrimInfo* primInfo = _GetHdPrimInfo(cachePath);
+    if (primInfo &&
+        primInfo->adapter &&
+        primInfo->adapter->IsInstancerAdapter() &&
+        primInfo->adapter->IsChildPath(cachePath)) {
+        return { };
+    }
     return _collectionCache.ComputeCollectionsContainingPath(cachePath);
 }
 

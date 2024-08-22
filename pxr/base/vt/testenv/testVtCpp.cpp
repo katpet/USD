@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -28,7 +11,6 @@
 #include "pxr/base/vt/value.h"
 #include "pxr/base/vt/streamOut.h"
 #include "pxr/base/vt/types.h"
-#include "pxr/base/vt/functions.h"
 #include "pxr/base/vt/visitValue.h"
 
 #include "pxr/base/gf/matrix2f.h"
@@ -63,6 +45,7 @@
 #include "pxr/base/tf/stopwatch.h"
 #include "pxr/base/tf/token.h"
 #include "pxr/base/tf/enum.h"
+#include "pxr/base/tf/preprocessorUtilsLite.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/type.h"
 #include "pxr/base/tf/fileUtils.h"
@@ -550,34 +533,6 @@ static void testArray() {
     }
 }
 
-static void testArrayOperators() {
-
-    {
-        VtDoubleArray a(3), b(3);
-        a[0] = 1;
-        a[1] = 2;
-        a[2] = 3;
-        b[0] = 4;
-        b[1] = 5;
-        b[2] = 6;
-
-        VtDoubleArray c = VtCat(a,b);
-        VtDoubleArray d = c * 2.0;
-        TF_AXIOM(d[3] == 8);
-        VtDoubleArray e = a * b / 2.0;
-        TF_AXIOM(e[2] == 9);
-        TF_AXIOM(VtAnyTrue(VtEqual(a,VtZero<double>())) == false);
-        TF_AXIOM(VtAllTrue(VtEqual(a-a,VtZero<double>())) == true);
-        std::string empty = VtZero<std::string>();
-        VtStringArray s(4);
-        s[0] = empty;
-        s[1] = "a";
-        s[2] = "test";
-        s[3] = "array";
-        TF_AXIOM(VtAllTrue(VtNotEqual(s,VtZero<std::string>())) == false);
-    }
-}
-
 static void testRecursiveDictionaries()
 {
     VtDictionary outer;
@@ -958,7 +913,7 @@ testDictionaryInitializerList()
     TF_AXIOM(!dict2.empty());
 
     int i = 0;
-    for (const string& k : {"key_a", "key_b"}) {
+    for (const char* k : {"key_a", "key_b"}) {
         auto it = dict2.find(k);
         TF_AXIOM(it != dict2.end());
         TF_AXIOM(it->first == k);
@@ -1501,6 +1456,16 @@ static void testValue() {
         t = v.UncheckedRemove<string>();
         TF_AXIOM(t == "hello world!");
         TF_AXIOM(v.IsEmpty());
+
+        // Held value mutation.
+        v = t;
+        TF_AXIOM(v.Mutate<string>([](std::string &str) { str += "!"; }));
+        TF_AXIOM(v.Get<string>() == "hello world!!");
+        v.UncheckedMutate<string>([](std::string &str) { str += "!"; });
+        TF_AXIOM(v.Get<string>() == "hello world!!!");
+
+        TF_AXIOM(!v.Mutate<int>([](int &i) { ++i; }));
+        TF_AXIOM(v.Get<string>() == "hello world!!!");
     }
 
     // Test calling Get with incorrect type.  Should issue an error and produce
@@ -1514,7 +1479,7 @@ static void testValue() {
         m.Clear();
     }
 
-#define _VT_TEST_ZERO_VALUE(r, unused, elem)                            \
+#define _VT_TEST_ZERO_VALUE(unused, elem)                               \
     {                                                                   \
         VtValue empty;                                                  \
         TfErrorMark m;                                                  \
@@ -1523,8 +1488,7 @@ static void testValue() {
         m.Clear();                                                      \
     }
     
-    BOOST_PP_SEQ_FOR_EACH(_VT_TEST_ZERO_VALUE,
-        unused, 
+    TF_PP_SEQ_FOR_EACH(_VT_TEST_ZERO_VALUE, ~,
         VT_VEC_VALUE_TYPES
         VT_MATRIX_VALUE_TYPES
         VT_QUATERNION_VALUE_TYPES
@@ -1854,10 +1818,19 @@ testKnownValueTypeIndex()
     TF_AXIOM(!VtIsKnownValueType<TypeNotKnownToVt>());
 }
 
+static void testVtCheapToCopy() {
+    static_assert(VtValueTypeHasCheapCopy<float>::value, "");
+    static_assert(VtValueTypeHasCheapCopy<int>::value, "");
+    static_assert(VtValueTypeHasCheapCopy<GfVec3d>::value, "");
+    static_assert(VtValueTypeHasCheapCopy<TfToken>::value, "");
+    static_assert(!VtValueTypeHasCheapCopy<std::string>::value, "");
+    static_assert(!VtValueTypeHasCheapCopy<VtArray<float>>::value, "");
+    static_assert(!VtValueTypeHasCheapCopy<VtArray<TfToken>>::value, "");
+}
+
 int main(int argc, char *argv[])
 {
     testArray();
-    testArrayOperators();
 
     testDictionary();
     testDictionaryKeyPathAPI();
@@ -1874,6 +1847,7 @@ int main(int argc, char *argv[])
 
     testVisitValue();
     testKnownValueTypeIndex();
+    testVtCheapToCopy();
 
     printf("Test SUCCEEDED\n");
 

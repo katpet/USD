@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/prim.h"
@@ -65,6 +48,26 @@
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+SdfPath
+UsdPrim::_ProtoToInstancePathMap
+::MapProtoToInstance(SdfPath const &protoPath) const
+{
+    SdfPath ret = protoPath;
+    if (_map.empty()) {
+        return ret;
+    }
+
+    auto it = SdfPathFindLongestPrefix(
+        _map.begin(), _map.end(), ret,
+        [](auto const &p) { return p.first; });
+
+    if (it != _map.end()) {
+        ret = ret.ReplacePrefix(it->first, it->second);
+    }
+    
+    return ret;
+}
 
 UsdPrim
 UsdPrim::GetChild(const TfToken &name) const
@@ -1244,6 +1247,28 @@ UsdPrim::HasProperty(const TfToken &propName) const
     return static_cast<bool>(GetProperty(propName));
 }
 
+bool
+UsdPrim::GetKind(TfToken *kind) const
+{
+    if (IsPseudoRoot()) {
+        // Special-case to pre-empt coding errors.
+        return false;
+    }
+
+    return GetMetadata(SdfFieldKeys->Kind, kind);
+}
+
+bool
+UsdPrim::SetKind(const TfToken &kind) const
+{
+    if (IsPseudoRoot()) {
+        // Special-case to pre-empt coding errors.
+        return false;
+    }
+
+    return SetMetadata(SdfFieldKeys->Kind, kind);
+}
+
 TfTokenVector
 UsdPrim::GetPropertyOrder() const
 {
@@ -1577,16 +1602,19 @@ struct UsdPrim_TargetFinder
     using Predicate = std::function<bool (PropertyType const &)>;
     
     static SdfPathVector
-    Find(UsdPrim const &prim, Predicate const &pred, bool recurse) {
-        UsdPrim_TargetFinder tf(prim, pred, recurse);
+    Find(UsdPrim const &prim, Usd_PrimFlagsPredicate const &traversal,
+         Predicate const &pred, bool recurse) {
+        UsdPrim_TargetFinder tf(prim, traversal, pred, recurse);
         tf._Find();
         return std::move(tf._result);
     }
 
 private:
     explicit UsdPrim_TargetFinder(
-        UsdPrim const &prim, Predicate const &pred, bool recurse)
+        UsdPrim const &prim, Usd_PrimFlagsPredicate const &traversal,
+        Predicate const &pred, bool recurse)
         : _prim(prim)
+        , _traversal(traversal)
         , _consumerTask(_dispatcher, [this]() { _ConsumerTask(); })
         , _predicate(pred)
         , _recurse(recurse) {}
@@ -1639,7 +1667,7 @@ private:
 
     void _VisitSubtree(UsdPrim const &prim) {
         _VisitPrim(prim);
-        auto range = prim.GetDescendants();
+        auto range = prim.GetFilteredDescendants(_traversal);
         WorkParallelForEach(range.begin(), range.end(),
                             [this](UsdPrim const &desc) { _VisitPrim(desc); });
     }
@@ -1665,6 +1693,7 @@ private:
     }
 
     UsdPrim _prim;
+    Usd_PrimFlagsPredicate _traversal;
     WorkDispatcher _dispatcher;
     WorkSingularTask _consumerTask;
     Predicate const &_predicate;
@@ -1695,19 +1724,41 @@ struct UsdPrim_AttrConnectionFinder
 USD_API
 SdfPathVector
 UsdPrim::FindAllAttributeConnectionPaths(
+    Usd_PrimFlagsPredicate const &traversal,
     std::function<bool (UsdAttribute const &)> const &predicate,
     bool recurseOnSources) const
 {
     return UsdPrim_AttrConnectionFinder
-        ::Find(*this, predicate, recurseOnSources);
+        ::Find(*this, traversal, predicate, recurseOnSources);
+}
+
+USD_API
+SdfPathVector
+UsdPrim::FindAllAttributeConnectionPaths(
+    std::function<bool (UsdAttribute const &)> const &predicate,
+    bool recurseOnSources) const
+{
+    return FindAllAttributeConnectionPaths(
+        UsdPrimDefaultPredicate, predicate, recurseOnSources);
 }
     
+SdfPathVector
+UsdPrim::FindAllRelationshipTargetPaths(
+    Usd_PrimFlagsPredicate const &traversal,
+    std::function<bool (UsdRelationship const &)> const &predicate,
+    bool recurseOnTargets) const
+{
+    return UsdPrim_RelTargetFinder::Find(
+        *this, traversal, predicate, recurseOnTargets);
+}
+
 SdfPathVector
 UsdPrim::FindAllRelationshipTargetPaths(
     std::function<bool (UsdRelationship const &)> const &predicate,
     bool recurseOnTargets) const
 {
-    return UsdPrim_RelTargetFinder::Find(*this, predicate, recurseOnTargets);
+    return FindAllRelationshipTargetPaths(
+        UsdPrimDefaultPredicate, predicate, recurseOnTargets);
 }
 
 bool
@@ -2034,6 +2085,43 @@ UsdPrim::_MakeResolveTargetFromEditTarget(
         // Return a resolve target starting at the edit node and layer.
         return UsdResolveTarget(resolveIndex, node, editTarget.GetLayer());
     }
+}
+
+UsdPrim::_ProtoToInstancePathMap
+UsdPrim::_GetProtoToInstancePathMap() const
+{
+    // Walk up to the root while we're in (nested) instance-land.  When we
+    // hit an instance or a prototype, add a mapping for the prototype
+    // source prim index path to this particular instance (proxy) path.
+
+    _ProtoToInstancePathMap pathMap;
+    if (_Prim()->IsInPrototype()) {
+        // This prim might be an instance proxy inside a prototype, if so use
+        // its prototype, but be sure to skip up to the parent if *this* prim is
+        // an instance.  Target paths on *this* prim are in the "space" of its
+        // next ancestral prototype, just as how attribute & metadata values
+        // come from the instance itself, not its prototype.
+
+        UsdPrim prim = *this;
+        if (prim.IsInstance()) {
+            prim = prim.GetParent();
+        }
+        for (; prim; prim = prim.GetParent()) {
+            UsdPrim prototype;
+            if (prim.IsInstance()) {
+                prototype = prim.GetPrototype();
+            } else if (prim.IsPrototype()) {
+                prototype = prim;
+            }
+            if (prototype) {
+                pathMap._map.emplace_back(
+                    prototype._GetSourcePrimIndex().GetPath(),
+                    prim.GetPath());
+            }
+        };
+        std::sort(pathMap._map.begin(), pathMap._map.end());
+    }
+    return pathMap;
 }
 
 UsdResolveTarget 

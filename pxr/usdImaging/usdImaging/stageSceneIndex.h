@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_IMAGING_STAGE_SCENE_INDEX_H
 #define PXR_USD_IMAGING_USD_IMAGING_STAGE_SCENE_INDEX_H
@@ -34,6 +17,9 @@
 
 #include "pxr/usd/usd/notice.h"
 #include "pxr/usd/usd/stage.h"
+
+#include <mutex>
+#include <set>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -78,8 +64,11 @@ public:
     void SetStage(UsdStageRefPtr stage);
 
     // Set the time, and call PrimsDirtied for any time-varying attributes.
+    //
+    // PrimsDirtied is only called if the time is different from the last call
+    // or forceDirtyingTimeDeps is true.
     USDIMAGING_API
-    void SetTime(UsdTimeCode time);
+    void SetTime(UsdTimeCode time, bool forceDirtyingTimeDeps = false);
 
     // Return the current time.
     USDIMAGING_API
@@ -97,7 +86,7 @@ private:
     USDIMAGING_API
     UsdImagingStageSceneIndex(HdContainerDataSourceHandle const &inputArgs);
 
-    Usd_PrimFlagsConjunction _GetTraversalPredicate() const;
+    Usd_PrimFlagsPredicate _GetPrimPredicate() const;
 
     void _ApplyPendingResyncs();
     void _ComputeDirtiedEntries(
@@ -111,14 +100,25 @@ private:
     public:
         // Datasource-facing API
         void FlagAsTimeVarying(
-            const SdfPath & primPath,
+            const SdfPath & hydraPath,
             const HdDataSourceLocator & locator) const override;
+
+        void FlagAsAssetPathDependent(
+            const SdfPath & usdPath) const override;
 
         UsdTimeCode GetTime() const override;
 
         // Scene index-facing API
         void SetTime(UsdTimeCode time,
                 HdSceneIndexObserver::DirtiedPrimEntries *dirtied);
+
+        void RemoveAssetPathDependentsUnder(const SdfPath &path);
+
+        void InvalidateAssetPathDependentsUnder(
+            const SdfPath &path,
+            std::vector<SdfPath> *primsToInvalidate,
+            std::map<SdfPath, TfTokenVector> *propertiesToInvalidate) const;
+
         void Clear();
 
     private:
@@ -133,6 +133,10 @@ private:
         using _VariabilityMap = tbb::concurrent_hash_map<SdfPath,
                 HdDataSourceLocatorSet, _PathHashCompare>;
         mutable _VariabilityMap _timeVaryingLocators;
+
+        using _AssetPathDependentsSet = std::set<SdfPath>;
+        mutable _AssetPathDependentsSet _assetPathDependents;
+        mutable std::mutex _assetPathDependentsMutex;
 
         UsdTimeCode _time;
     };

@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -94,17 +77,9 @@ TestPrimMetadata()
     TF_AXIOM(!primDef->GetMetadata(SdfFieldKeys->Hidden, &val));
     TF_AXIOM(val == 0.0);
 
-    // XXX: It's reasonable to expect that calling GetMetadataDictKey using
-    // an output type that doesn't match the type of the value at the key in the 
-    // dictionary would return false. However SdfLayer::HasFieldDictKey (which
-    // GetMetadataDictKey eventually calls) does not return false on a type
-    // mismatch. This may be a bug or it may be intentional so for now at least,
-    // this case will return true, but won't write out to the value.
-    TF_AXIOM(primDef->GetMetadataByDictKey(
+    TF_AXIOM(!primDef->GetMetadataByDictKey(
              TfToken("testDictionaryMetadata"), TfToken("name"), &val));
     TF_AXIOM(val == 0.0);
-    // But calling GetMetaByDictKey on non-dicionary metadata or a non-existent
-    // key in valid dictionary metadata does return false.
     TF_AXIOM(!primDef->GetMetadataByDictKey(
              TfToken("testCustomMetadata"), TfToken("name"), &val));
     TF_AXIOM(val == 0.0);
@@ -253,21 +228,12 @@ TestAttributeMetadata()
     TF_AXIOM(!primDef->GetPropertyMetadata(
         attrNameToken, SdfFieldKeys->AllowedTokens, &val));
     TF_AXIOM(val == 0.0);
-
-    // XXX: It's reasonable to expect that calling GetMetadataDictKey using
-    // an output type that doesn't match the type of the value at the key in the 
-    // dictionary would return false. However SdfLayer::HasFieldDictKey (which
-    // GetMetadataDictKey eventually calls) does not return false on a type
-    // mismatch. This may be a bug or it may be intentional so for now at least,
-    // this case will return true, but won't write out to the value.
-    TF_AXIOM(attrDef.GetMetadataByDictKey(
+    TF_AXIOM(!attrDef.GetMetadataByDictKey(
              TfToken("testDictionaryMetadata"), TfToken("name"), &val));
     TF_AXIOM(val == 0.0);
-    TF_AXIOM(primDef->GetPropertyMetadataByDictKey(attrNameToken,
+    TF_AXIOM(!primDef->GetPropertyMetadataByDictKey(attrNameToken,
              TfToken("testDictionaryMetadata"), TfToken("name"), &val));
     TF_AXIOM(val == 0.0);
-    // But calling GetMetaByDictKey on non-dicionary metadata or a non-existent
-    // key in valid dictionary metadata does return false.
     TF_AXIOM(!attrDef.GetMetadataByDictKey(
              TfToken("testCustomMetadata"), TfToken("name"), &val));
     TF_AXIOM(val == 0.0);

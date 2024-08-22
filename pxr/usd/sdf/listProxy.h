@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_SDF_LIST_PROXY_H
 #define PXR_USD_SDF_LIST_PROXY_H
@@ -35,11 +18,9 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/errorMark.h"
 #include "pxr/base/tf/iterator.h"
-#include <boost/iterator/iterator_facade.hpp>
-#include <boost/iterator/reverse_iterator.hpp>
-#include <boost/optional.hpp>
 
 #include <memory>
+#include <optional>
 #include <type_traits>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -59,6 +40,10 @@ public:
     typedef SdfListProxy<TypePolicy> This;
     typedef typename TypePolicy::value_type value_type;
     typedef std::vector<value_type> value_vector_type;
+
+    /// Returned from \ref Find when a value could not be located in the
+    /// list of operations. 
+    static const size_t invalidIndex = -1;
 
 private:
     // Proxies an item in a list editor list.
@@ -136,43 +121,129 @@ private:
     friend class _ConstGetHelper;
 
     template <class Owner, class GetItem>
-    class _Iterator :
-        public boost::iterator_facade<
-            _Iterator<Owner, GetItem>,
-            std::remove_cv_t<
+    class _Iterator {
+        class _PtrProxy {
+        public:
+            std::add_pointer_t<typename GetItem::result_type> operator->() {
+                return std::addressof(_result);
+            }
+        private:
+            friend class _Iterator;
+            explicit _PtrProxy(
+                std::add_const_t<
+                    std::add_lvalue_reference_t<
+                        typename GetItem::result_type>
+                > result) : _result(result) {}
+            typename GetItem::result_type _result;
+        };
+    public:
+        using This = _Iterator<Owner, GetItem>;
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = std::remove_cv_t<
                 std::remove_reference_t<
                     typename GetItem::result_type
                 >
-            >,
-            std::random_access_iterator_tag,
-            typename GetItem::result_type> {
-    public:
-        typedef _Iterator<Owner, GetItem> This;
-        typedef
-            boost::iterator_facade<
-                _Iterator<Owner, GetItem>,
-                std::remove_cv_t<
-                    std::remove_reference_t<
-                        typename GetItem::result_type
-                    >
-                >,
-                std::random_access_iterator_tag,
-                typename GetItem::result_type> Parent;
-        typedef typename Parent::reference reference;
-        typedef typename Parent::difference_type difference_type;
+            >;
+        using reference = typename GetItem::result_type;
+        using pointer = _PtrProxy;
+        using difference_type = std::ptrdiff_t;
 
-        _Iterator() : _owner(NULL), _index(0)
-        {
-            // Do nothing
-        }
+        static_assert(!std::is_lvalue_reference<reference>::value,
+                      "reference is an lvalue_reference and usage of "
+                      "this class unnecessarily instantiates a _PtrProxy.");
+
+        _Iterator() = default;
 
         _Iterator(Owner owner, size_t index) : _owner(owner), _index(index)
         {
             // Do nothing
         }
 
+        reference operator*() const { return dereference(); }
+        pointer operator->() const { return pointer(dereference()); }
+        reference operator[](const difference_type index) const {
+            This advanced(*this);
+            advanced.advance(index);
+            return advanced.dereference();
+        }
+
+        difference_type operator-(const This& other) const {
+            return -distance_to(other);
+        }
+
+        This& operator++() {
+            increment();
+            return *this;
+        }
+
+        This& operator--() {
+            decrement();
+            return *this;
+        }
+
+        This operator++(int) {
+            This result(*this);
+            increment();
+            return result;
+        }
+
+        This operator--(int) {
+            This result(*this);
+            decrement();
+            return result;
+        }
+
+        This operator+(const difference_type increment) const {
+            This result(*this);
+            result.advance(increment);
+            return result;
+        }
+
+        This operator-(const difference_type decrement) const {
+            This result(*this);
+            result.advance(-decrement);
+            return result;
+        }
+
+        This& operator+=(const difference_type increment) {
+            advance(increment);
+            return *this;
+        }
+
+        This& operator-=(const difference_type decrement) {
+            advance(-decrement);
+            return *this;
+        }
+
+        bool operator==(const This& other) const {
+            return equal(other);
+        }
+
+        bool operator!=(const This& other) const {
+            return !equal(other);
+        }
+
+        bool operator<(const This& other) const {
+            TF_DEV_AXIOM(_owner == other._owner);
+            return _index < other._index;
+        }
+
+        bool operator<=(const This& other) const {
+            TF_DEV_AXIOM(_owner == other._owner);
+            return _index <= other._index;
+        }
+
+        bool operator>(const This& other) const {
+            TF_DEV_AXIOM(_owner == other._owner);
+            return _index > other._index;
+        }
+
+        bool operator>=(const This& other) const {
+            TF_DEV_AXIOM(_owner == other._owner);
+            return _index >= other._index;
+        }
+
     private:
-        friend class boost::iterator_core_access;
 
         reference dereference() const {
             return _getItem(_owner, _index);
@@ -205,16 +276,16 @@ private:
 
     private:
         GetItem _getItem;
-        Owner _owner;
-        size_t _index;
+        Owner _owner = nullptr;
+        size_t _index = 0;
     };
 
 public:
     typedef _ItemProxy reference;
     typedef _Iterator<This*, _GetHelper> iterator;
     typedef _Iterator<const This*, _ConstGetHelper> const_iterator;
-    typedef boost::reverse_iterator<iterator> reverse_iterator;
-    typedef boost::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef Tf_ProxyReferenceReverseIterator<iterator> reverse_iterator;
+    typedef Tf_ProxyReferenceReverseIterator<const_iterator> const_reverse_iterator;
 
     /// Creates a default list proxy object for list operation vector specified
     /// \p op. This object evaluates to false in a boolean context and all
@@ -516,9 +587,11 @@ public:
         return (_Validate() ? _listEditor->Count(_op, value) : 0);
     }
 
+    /// Returns the index of \p value in the list of operations.  If \p value
+    /// is not found, then \ref invalidIndex is returned instead.
     size_t Find(const value_type& value) const
     {
-        return (_Validate() ? _listEditor->Find(_op, value) : size_t(-1));
+        return (_Validate() ? _listEditor->Find(_op, value) : invalidIndex);
     }
 
     void Insert(int index, const value_type& value)
@@ -532,7 +605,7 @@ public:
     void Remove(const value_type& value)
     {
         size_t index = Find(value);
-        if (index != size_t(-1)) {
+        if (index != invalidIndex) {
             Erase(index);
         }
         else {
@@ -579,10 +652,10 @@ public:
     /// Modify all edits in this list. 
     ///
     /// \p callback must be a callable that accepts an argument of type
-    /// value_type and returns a boost::optional<value_type>. 
+    /// value_type and returns a std::optional<value_type>.
     ///
     /// \p callback is called with every item in the list. If an invalid
-    /// boost::optional is returned, the item is removed. Otherwise it's
+    /// std::optional is returned, the item is removed. Otherwise it's
     /// replaced with the returned item. If a returned item matches an
     /// item that was previously returned, the returned item will be
     /// removed.

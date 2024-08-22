@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/drawModeAdapter.h"
 
@@ -37,6 +20,7 @@
 #include "pxr/usd/usdGeom/modelAPI.h"
 #include "pxr/usd/sdr/registry.h"
 #include "pxr/usd/sdr/shaderNode.h"
+#include "pxr/usd/usd/prim.h"
 
 #include "pxr/base/gf/matrix4f.h"
 #include "pxr/base/tf/type.h"
@@ -67,6 +51,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (subsetMaterialZNeg)
 
     (worldtoscreen)
+    (worldToNDC)
 
     (displayRoughness)
     (diffuseColor)
@@ -176,7 +161,7 @@ _GetAxesMask(UsdPrim const& prim, UsdTimeCode time) {
 }
 
 UsdImagingDrawModeAdapter::UsdImagingDrawModeAdapter()
-    : UsdImagingPrimAdapter()
+    : BaseAdapter()
     , _schemaColor(0)
 {
     // Look up the default color in the schema registry.
@@ -187,10 +172,6 @@ UsdImagingDrawModeAdapter::UsdImagingDrawModeAdapter()
         primDef->GetAttributeFallbackValue(
             UsdGeomTokens->modelDrawModeColor, &_schemaColor);
     }
-}
-
-UsdImagingDrawModeAdapter::~UsdImagingDrawModeAdapter()
-{
 }
 
 bool
@@ -218,8 +199,10 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
                                     UsdImagingInstancerContext const*
                                        instancerContext)
 {
-    SdfPath cachePath = UsdImagingGprimAdapter::_ResolveCachePath(
+    const SdfPath cachePath = ResolveCachePath(
         prim.GetPath(), instancerContext);
+    const SdfPath proxyPrimPath = ResolveProxyPrimPath(
+        cachePath, instancerContext);
 
     // The draw mode adapter only supports models or unloaded prims.
     // This is enforced in UsdImagingDelegate::_IsDrawModeApplied.
@@ -248,10 +231,10 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
         instancerContext->instancerAdapter :
         shared_from_this();
 
-    // If this prim isn't instanced, cachePrim will be the same as "prim", but
+    // If this prim isn't instanced, proxyPrim will be the same as "prim", but
     // if it is instanced the instancer adapters expect us to pass in this
     // prim, which should point to the instancer.
-    UsdPrim cachePrim = _GetPrim(cachePath.GetAbsoluteRootOrPrimPath());
+    UsdPrim proxyPrim = _GetPrim(proxyPrimPath);
 
     if (drawMode == UsdGeomTokens->origin ||
         drawMode == UsdGeomTokens->bounds) {
@@ -261,8 +244,11 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
                     "%s, basis curves not supported", cachePath.GetText());
             return SdfPath();
         }
+        // cache the draw mode before inserting the prim
+        _drawModeMap.insert({ cachePath, drawMode });
+
         index->InsertRprim(HdPrimTypeTokens->basisCurves,
-            cachePath, cachePrim, rprimAdapter);
+            cachePath, proxyPrim, rprimAdapter);
         HD_PERF_COUNTER_INCR(UsdImagingTokens->usdPopulatedPrimCount);
     } else if (drawMode == UsdGeomTokens->cards) {
         // Cards draw as a mesh
@@ -271,8 +257,11 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
                     "meshes not supported", cachePath.GetText());
             return SdfPath();
         }
+        // cache the draw mode before inserting the prim
+        _drawModeMap.insert({ cachePath, drawMode });
+
         index->InsertRprim(HdPrimTypeTokens->mesh,
-            cachePath, cachePrim, rprimAdapter);
+            cachePath, proxyPrim, rprimAdapter);
         HD_PERF_COUNTER_INCR(UsdImagingTokens->usdPopulatedPrimCount);
     } else {
         TF_CODING_ERROR("Model <%s> has unsupported drawMode '%s'",
@@ -282,16 +271,12 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
 
     // As long as we're passing cachePrim to InsertRprim, we need to fix up
     // the dependency map ourselves. For USD edit purposes, we depend on the
-    // prototype prim ("prim"), rather than the instancer prim.
+    // prototype prim ("prim"), rather than the instancer prim ("proxyPrim").
     // See similar code in GprimAdapter::_AddRprim.
     if (instancerContext != nullptr) {
         index->RemovePrimInfoDependency(cachePath);
         index->AddDependency(cachePath, prim);
     }
-
-    // When instancing, cachePath may have a proto prop part on the end.
-    // This will strip the prop part, leaving primPath as the instancer's path.
-    SdfPath primPath = cachePath.GetAbsoluteRootOrPrimPath();
 
     // Additionally, insert the material.
     if (drawMode == UsdGeomTokens->cards) {
@@ -339,9 +324,6 @@ UsdImagingDrawModeAdapter::Populate(UsdPrim const& prim,
             }
         }
     }
-
-    // Record the drawmode for use in UpdateForTime().
-    _drawModeMap.insert(std::make_pair(cachePath, drawMode));
 
     return cachePath;
 }
@@ -1264,22 +1246,22 @@ UsdImagingDrawModeAdapter::_GenerateCardsFromTextureGeometry(
     GfMatrix4d mat;
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureXPosAttr(), &mat))
-        faces.push_back(std::make_pair(mat, xPos));
+        faces.push_back({ mat, xPos });
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureYPosAttr(), &mat))
-        faces.push_back(std::make_pair(mat, yPos));
+        faces.push_back({ mat, yPos });
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureZPosAttr(), &mat))
-        faces.push_back(std::make_pair(mat, zPos));
+        faces.push_back({ mat, zPos });
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureXNegAttr(), &mat))
-        faces.push_back(std::make_pair(mat, xNeg));
+        faces.push_back({ mat, xNeg });
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureYNegAttr(), &mat))
-        faces.push_back(std::make_pair(mat, yNeg));
+        faces.push_back({ mat, yNeg });
     if (_GetMatrixFromImageMetadata(
             model.GetModelCardTextureZNegAttr(), &mat))
-        faces.push_back(std::make_pair(mat, zNeg));
+        faces.push_back({ mat, zNeg });
 
     // Generate points, UV, and assignment primvars, plus index data.
     VtVec3fArray arr_pt = VtVec3fArray(faces.size() * 4);
@@ -1399,30 +1381,54 @@ UsdImagingDrawModeAdapter::_GetMatrixFromImageMetadata(
     //   in row major order.
     // - GfMatrix4f or GfMatrix4d
     VtValue worldtoscreen;
-    if (img->GetMetadata(_tokens->worldtoscreen, &worldtoscreen)) {
-        if (worldtoscreen.IsHolding<std::vector<float>>()) {
-            return _ConvertToMatrix(
-                worldtoscreen.UncheckedGet<std::vector<float>>(), mat);
-        }
-        else if (worldtoscreen.IsHolding<std::vector<double>>()) {
-            return _ConvertToMatrix(
-                worldtoscreen.UncheckedGet<std::vector<double>>(), mat);
-        }
-        else if (worldtoscreen.IsHolding<GfMatrix4f>()) {
-            *mat = GfMatrix4d(worldtoscreen.UncheckedGet<GfMatrix4f>());
-            return true;
-        }
-        else if (worldtoscreen.IsHolding<GfMatrix4d>()) {
-            *mat = worldtoscreen.UncheckedGet<GfMatrix4d>();
-            return true;
-        }
-        else {
-            TF_WARN(
-                "worldtoscreen metadata holding unexpected type '%s'",
-                worldtoscreen.GetTypeName().c_str());
+
+    // XXX: OpenImageIO >= 2.2 no longer flips 'worldtoscreen' with 'worldToNDC'
+    // on read and write, so assets where 'worldtoscreen' was written with > 2.2
+    // have 'worldToNDC' actually in the metadata, and OIIO < 2.2 would read
+    // and return 'worldToNDC' from the file in response to a request for 
+    // 'worldtoscreen'. OIIO >= 2.2 no longer does either, so 'worldtoscreen'
+    // gets written as 'worldtoscreen' and returned when asked for
+    // 'worldtoscreen'. Issues only arise when trying to read 'worldtoscreen'
+    // from an asset written with OIIO < 2.2, when the authoring program told
+    // OIIO to write it as 'worldtoscreen'. Old OIIO flipped it to 'worldToNDC'.
+    // So new OIIO needs to read 'worldToNDC' to retrieve it.
+    //
+    // See https://github.com/OpenImageIO/oiio/pull/2609
+    //
+    // OIIO's change is correct -- the two metadata matrices have different
+    // semantic meanings, and should not be conflated. Unfortunately, users will
+    // have to continue to conflate them for a while as assets transition into
+    // vfx2022 (which uses OIIO 2.3). So we will need to check for both.
+
+    if (!img->GetMetadata(_tokens->worldtoscreen, &worldtoscreen)) {
+        if (img->GetMetadata(_tokens->worldToNDC, &worldtoscreen)) {
+            TF_WARN("The texture asset '%s' referenced at <%s> may have been "
+            "authored by an earlier version of the VFX toolset. To silence this "
+            "warning, please regenerate the asset with the current toolset.",
+            file.c_str(), attr.GetPath().GetText());
+        } else {
+            TF_WARN("The texture asset '%s' referenced at <%s> lacks a "
+            "worldtoscreen matrix in metadata. Cards draw mode may not appear "
+            "as expected.", file.c_str(), attr.GetPath().GetText());
+            return false;
         }
     }
-
+    
+    if (worldtoscreen.IsHolding<std::vector<float>>()) {
+        return _ConvertToMatrix(
+            worldtoscreen.UncheckedGet<std::vector<float>>(), mat);
+    } else if (worldtoscreen.IsHolding<std::vector<double>>()) {
+        return _ConvertToMatrix(
+            worldtoscreen.UncheckedGet<std::vector<double>>(), mat);
+    } else if (worldtoscreen.IsHolding<GfMatrix4f>()) {
+        *mat = GfMatrix4d(worldtoscreen.UncheckedGet<GfMatrix4f>());
+        return true;
+    } else if (worldtoscreen.IsHolding<GfMatrix4d>()) {
+        *mat = worldtoscreen.UncheckedGet<GfMatrix4d>();
+        return true;
+    }
+    TF_WARN("worldtoscreen metadata holding unexpected type '%s'",
+        worldtoscreen.GetTypeName().c_str());
     return false;
 }
 
@@ -1561,11 +1567,7 @@ UsdImagingDrawModeAdapter::GetTransform(UsdPrim const& prim,
     // the instance prim, but we want to ignore transforms on that
     // prim since the instance adapter will incorporate it into the per-instance
     // transform and we don't want to double-transform the prim.
-    //
-    // Note: if the prim is unloaded (because unloaded prims are drawing as
-    // bounds), we skip the normal instancing machinery and need to handle
-    // the transform ourselves.
-    if (prim.IsInstance() && prim.IsLoaded()) {
+    if (prim.IsInstance()) {
         return GfMatrix4d(1.0);
     } else {
         return BaseAdapter::GetTransform(

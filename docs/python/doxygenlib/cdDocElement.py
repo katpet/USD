@@ -1,26 +1,8 @@
 #
 # Copyright 2023 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 # cdDocElement.py
 #
@@ -29,8 +11,13 @@
 #
 # The Parser class is responsible for building up a list of these objects.
 #
+from collections import namedtuple
 
 from .cdUtils import Warn
+
+
+Param = namedtuple("Param", "type name default")
+
 
 class DocElement:
     """
@@ -44,6 +31,9 @@ class DocElement:
     in that list represents an alternative calling signature for the
     same function, i.e., in C++ parlance, the overloaded methods.
     """
+
+    __slots__ = ("name", "kind", "prot", "doc", "location", "children", "const", "virt", "explicit",
+                 "static", "inline", "returnType", "argsString", "definition", "params")
 
     def __init__(self, name, kind, prot, doc, location):
         self.name = name                     # the name of this class/method
@@ -60,7 +50,10 @@ class DocElement:
         self.returnType = None               # return type of a method/function
         self.argsString = None               # arguments for this method/func
         self.definition = None               # full C++ definition for method
-        self.params = None                   # name and type of each parameter
+        self.params = None                   # type, name, and default of each parameter
+
+    def __repr__(self):
+        return "%s(%r, %r, %r, ...)" % (self.__class__.__name__, self.name, self.kind, self.location)
 
     def isFunction(self):
         """Is this doc element a function?"""
@@ -86,6 +79,10 @@ class DocElement:
         """Is this doc element the root of the doxygen XML tree?"""
         return self.kind == 'root'
 
+    def isStatic(self):
+        """Is this doc element static?"""
+        return self.static is not None and self.static == 'yes'
+    
     def addChildren(self, children):
         """Adds the list of nodes as children of this node."""
         for child in children:
@@ -103,7 +100,7 @@ class DocElement:
                 del(self.children[childName])
                 self.__addChild(obj)
                 return
-        Warn('could not find innerclass %s in %s' % (innerClassName,self.name))
+        Warn('%r: could not find innerclass %s in %s' % (self, innerClassName,self.name))
 
     def __addChild(self, child):
         if child.name in self.children:
@@ -120,8 +117,8 @@ class DocElement:
                     # so just ignore it.
                     pass
                 else:
-                    Warn('overload mismatch: expected functions, got %s and %s' % \
-                          (self.children[child.name][0].kind, child.kind))
+                    Warn('%r: overload mismatch: expected functions, got %s and %s' % \
+                         (self, self.children[child.name][0].kind, child.kind))
         else:
             self.children[child.name] = [child]
 

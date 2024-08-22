@@ -1,25 +1,8 @@
 //
 // Copyright 2021 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/pipelineDrawBatch.h"
 
@@ -160,10 +143,10 @@ HdSt_PipelineDrawBatch::SetEnableTinyPrimCulling(bool tinyPrimCulling)
 
 /* static */
 bool
-HdSt_PipelineDrawBatch::IsEnabled(HgiCapabilities const *hgiCapabilities)
+HdSt_PipelineDrawBatch::IsEnabled(Hgi const *hgi)
 {
     // We require Hgi resource generation.
-    return HdSt_CodeGen::IsEnabledHgiResourceGeneration(hgiCapabilities);
+    return HdSt_CodeGen::IsEnabledHgiResourceGeneration(hgi);
 }
 
 /* static */
@@ -597,7 +580,8 @@ _AllocateTessFactorsBuffer(
 
     return resourceRegistry->RegisterBufferResource(
         HdTokens->tessFactors,
-        HdTupleType{HdTypeHalfFloat, numElements*numTessFactorsPerElement});
+        HdTupleType{HdTypeHalfFloat, numElements*numTessFactorsPerElement},
+        HgiBufferUsageUniform);
 }
 
 } // annonymous namespace
@@ -988,7 +972,8 @@ HdSt_PipelineDrawBatch::PrepareDraw(
 void
 HdSt_PipelineDrawBatch::EncodeDraw(
     HdStRenderPassStateSharedPtr const & renderPassState,
-    HdStResourceRegistrySharedPtr const & resourceRegistry)
+    HdStResourceRegistrySharedPtr const & resourceRegistry,
+    bool firstDrawBatch)
 {
     if (_HasNothingToDraw()) return;
 
@@ -1004,7 +989,8 @@ HdSt_PipelineDrawBatch::EncodeDraw(
 
     _indirectCommands.reset();
     if (drawICB) {
-        _PrepareIndirectCommandBuffer(renderPassState, resourceRegistry);
+        _PrepareIndirectCommandBuffer(renderPassState, resourceRegistry,
+            firstDrawBatch);
     }
 }
 
@@ -1084,8 +1070,10 @@ _BindingState::GetBindingsForDrawing(
         bindingsDesc, topVisBar, HdTokens->topologyVisibility);
 
     binder.GetBufferArrayBindingDesc(bindingsDesc, indexBar);
-    binder.GetBufferArrayBindingDesc(bindingsDesc, elementBar);
-    binder.GetBufferArrayBindingDesc(bindingsDesc, fvarBar);
+    if (!geometricShader->IsPrimTypePoints()) {
+        binder.GetBufferArrayBindingDesc(bindingsDesc, elementBar);
+        binder.GetBufferArrayBindingDesc(bindingsDesc, fvarBar);
+    }
     binder.GetBufferArrayBindingDesc(bindingsDesc, varyingBar);
 
     if (tessFactorsBuffer) {
@@ -1117,7 +1105,7 @@ _BindingState::GetBindingsForDrawing(
             binder.GetBindingRequestBindingDesc(bindingsDesc, req);
         }
         HdSt_TextureBinder::GetBindingDescs(
-                binder, bindingsDesc, shader->GetNamedTextureHandles());
+            binder, bindingsDesc, shader->GetNamedTextureHandles());
     }
 }
 
@@ -1258,7 +1246,8 @@ HgiGraphicsPipelineSharedPtr
 _GetDrawPipeline(
     HdStRenderPassStateSharedPtr const & renderPassState,
     HdStResourceRegistrySharedPtr const & resourceRegistry,
-    _BindingState const & state)
+    _BindingState const & state,
+    bool firstDrawBatch)
 {
     // Drawing pipeline is compatible as long as the shader and
     // pipeline state are the same.
@@ -1268,7 +1257,8 @@ _GetDrawPipeline(
     static const uint64_t salt = ArchHash64(__FUNCTION__, sizeof(__FUNCTION__));
     uint64_t hash = salt;
     hash = TfHash::Combine(hash, programHandle.Get());
-    hash = TfHash::Combine(hash, renderPassState->GetGraphicsPipelineHash());
+    hash = TfHash::Combine(hash, renderPassState->GetGraphicsPipelineHash(
+        state.geometricShader, firstDrawBatch));
 
     HdInstance<HgiGraphicsPipelineSharedPtr> pipelineInstance =
         resourceRegistry->RegisterGraphicsPipeline(hash);
@@ -1277,7 +1267,8 @@ _GetDrawPipeline(
         HgiGraphicsPipelineDesc pipeDesc;
 
         renderPassState->InitGraphicsPipelineDesc(&pipeDesc,
-                                                  state.geometricShader);
+                                                  state.geometricShader,
+                                                  firstDrawBatch);
 
         pipeDesc.shaderProgram = state.glslProgram->GetProgram();
         pipeDesc.vertexBuffers = _GetVertexBuffersForDrawing(state);
@@ -1297,7 +1288,8 @@ HgiGraphicsPipelineSharedPtr
 _GetPTCSPipeline(
     HdStRenderPassStateSharedPtr const & renderPassState,
     HdStResourceRegistrySharedPtr const & resourceRegistry,
-    _BindingState const & state)
+    _BindingState const & state,
+    bool firstDrawBatch)
 {
     // PTCS pipeline is compatible as long as the shader and
     // pipeline state are the same.
@@ -1307,7 +1299,8 @@ _GetPTCSPipeline(
     static const uint64_t salt = ArchHash64(__FUNCTION__, sizeof(__FUNCTION__));
     uint64_t hash = salt;
     hash = TfHash::Combine(hash, programHandle.Get());
-    hash = TfHash::Combine(hash, renderPassState->GetGraphicsPipelineHash());
+    hash = TfHash::Combine(hash, renderPassState->GetGraphicsPipelineHash(
+        state.geometricShader, firstDrawBatch));
 
     HdInstance<HgiGraphicsPipelineSharedPtr> pipelineInstance =
         resourceRegistry->RegisterGraphicsPipeline(hash);
@@ -1316,16 +1309,10 @@ _GetPTCSPipeline(
         HgiGraphicsPipelineDesc pipeDesc;
 
         renderPassState->InitGraphicsPipelineDesc(&pipeDesc,
-                                                  state.geometricShader);
+                                                  state.geometricShader,
+                                                  firstDrawBatch);
 
         pipeDesc.rasterizationState.rasterizerEnabled = false;
-        pipeDesc.multiSampleState.sampleCount = HgiSampleCount1;
-        pipeDesc.multiSampleState.alphaToCoverageEnable = false;
-        pipeDesc.depthState.depthWriteEnabled = false;
-        pipeDesc.depthState.depthTestEnabled = false;
-        pipeDesc.depthState.stencilTestEnabled = false;
-        pipeDesc.primitiveType = HgiPrimitiveTypePatchList;
-        pipeDesc.multiSampleState.multiSampleEnable = false;
 
         pipeDesc.shaderProgram = state.glslProgram->GetProgram();
         pipeDesc.vertexBuffers = _GetVertexBuffersForDrawing(state);
@@ -1346,7 +1333,8 @@ void
 HdSt_PipelineDrawBatch::ExecuteDraw(
     HgiGraphicsCmds * gfxCmds,
     HdStRenderPassStateSharedPtr const & renderPassState,
-    HdStResourceRegistrySharedPtr const & resourceRegistry)
+    HdStResourceRegistrySharedPtr const & resourceRegistry,
+    bool firstDrawBatch)
 {
     TRACE_FUNCTION();
 
@@ -1361,8 +1349,8 @@ HdSt_PipelineDrawBatch::ExecuteDraw(
 
     if (_tessFactorsBuffer) {
         // Metal tessellation tessFactors are computed by PTCS.
-        _ExecutePTCS(gfxCmds, renderPassState, resourceRegistry);
-
+        _ExecutePTCS(gfxCmds, renderPassState, resourceRegistry,
+            firstDrawBatch);
         // Finish computing tessFactors before drawing.
         gfxCmds->InsertMemoryBarrier(HgiMemoryBarrierAll);
     }
@@ -1395,8 +1383,9 @@ HdSt_PipelineDrawBatch::ExecuteDraw(
             _GetDrawPipeline(
                 renderPassState,
                 resourceRegistry,
-                state);
-        
+                state,
+                firstDrawBatch);
+
         HgiGraphicsPipelineHandle psoHandle = *pso.get();
         gfxCmds->BindPipeline(psoHandle);
 
@@ -1569,7 +1558,8 @@ _GetCullPipeline(
 void
 HdSt_PipelineDrawBatch::_PrepareIndirectCommandBuffer(
     HdStRenderPassStateSharedPtr const & renderPassState,
-    HdStResourceRegistrySharedPtr const & resourceRegistry)
+    HdStResourceRegistrySharedPtr const & resourceRegistry,
+    bool firstDrawBatch)
 {
     Hgi *hgi = resourceRegistry->GetHgi();
     _DrawingProgram & program = _GetDrawingProgram(renderPassState,
@@ -1588,7 +1578,8 @@ HdSt_PipelineDrawBatch::_PrepareIndirectCommandBuffer(
         _GetDrawPipeline(
             renderPassState,
             resourceRegistry,
-            state);
+            state,
+            firstDrawBatch);
     
     HgiGraphicsPipelineHandle psoHandle = *pso.get();
 
@@ -1664,6 +1655,7 @@ HdSt_PipelineDrawBatch::_ExecuteFrustumCull(
         GfMatrix4f cullMatrix;
         GfVec2f drawRangeNDC;
         uint32_t drawCommandNumUints;
+        uint32_t indexEnd;
     };
 
     // We perform frustum culling in a compute shader, stomping the
@@ -1738,17 +1730,19 @@ HdSt_PipelineDrawBatch::_ExecuteFrustumCull(
     HdStBufferResourceSharedPtr paramBuffer = _dispatchBuffer->
         GetBufferArrayRange()->GetResource(HdTokens->drawDispatch);
 
+    int const inputCount = _dispatchBufferCullInput->GetCount();
+
     // set instanced cull parameters
     Uniforms cullParams;
     cullParams.cullMatrix = cullMatrix;
     cullParams.drawRangeNDC = drawRangeNdc;
     cullParams.drawCommandNumUints = _dispatchBuffer->GetCommandNumUints();
+    cullParams.indexEnd = inputCount;
 
     computeCmds->SetConstantValues(
         psoHandle, 0,
         sizeof(Uniforms), &cullParams);
 
-    int const inputCount = _dispatchBufferCullInput->GetCount();
     computeCmds->Dispatch(inputCount, 1);
     computeCmds->PopDebugGroup();
 
@@ -1762,9 +1756,10 @@ HdSt_PipelineDrawBatch::_ExecuteFrustumCull(
 
 void
 HdSt_PipelineDrawBatch::_ExecutePTCS(
-        HgiGraphicsCmds *ptcsGfxCmds,
-        HdStRenderPassStateSharedPtr const & renderPassState,
-        HdStResourceRegistrySharedPtr const & resourceRegistry)
+    HgiGraphicsCmds *ptcsGfxCmds,
+    HdStRenderPassStateSharedPtr const & renderPassState,
+    HdStResourceRegistrySharedPtr const & resourceRegistry,
+    bool firstDrawBatch)
 {
     TRACE_FUNCTION();
 
@@ -1799,7 +1794,8 @@ HdSt_PipelineDrawBatch::_ExecutePTCS(
     HgiGraphicsPipelineSharedPtr const & psoTess =
         _GetPTCSPipeline(renderPassState,
                          resourceRegistry,
-                         state);
+                         state,
+                         firstDrawBatch);
 
     HgiGraphicsPipelineHandle psoTessHandle = *psoTess.get();
     ptcsGfxCmds->BindPipeline(psoTessHandle);
@@ -1881,7 +1877,7 @@ HdSt_PipelineDrawBatch::_BeginGPUCountVisibleInstances(
 
         _resultBuffer =
             resourceRegistry->RegisterBufferResource(
-                _tokens->drawIndirectResult, tupleType);
+                _tokens->drawIndirectResult, tupleType, HgiBufferUsageStorage);
     }
 
     // Reset visible item count
@@ -1907,9 +1903,7 @@ HdSt_PipelineDrawBatch::_EndGPUCountVisibleInstances(
 {
     // Submit and wait for all the work recorded up to this point.
     // The GPU work must complete before we can read-back the GPU buffer.
-    // GPU frustum culling is (currently) a vertex shader without a fragment
-    // shader, so we submit the blit work, but do not have any compute work.
-    resourceRegistry->SubmitBlitWork(HgiSubmitWaitTypeWaitUntilCompleted);
+    resourceRegistry->SubmitComputeWork(HgiSubmitWaitTypeWaitUntilCompleted);
 
     int32_t count = 0;
 

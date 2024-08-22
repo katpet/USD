@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/common.h"
@@ -40,10 +23,10 @@
 #include "pxr/usd/usd/usdaFileFormat.h"
 
 #include "pxr/base/gf/interval.h"
+#include "pxr/base/tf/preprocessorUtilsLite.h"
 #include "pxr/base/tf/stringUtils.h"
 
-#include <boost/optional.hpp>
-
+#include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -305,7 +288,7 @@ Usd_Clip::_GetBracketingTimeSamplesForPathFromClipLayer(
         return true;
     }
 
-    boost::optional<ExternalTime> translatedLower, translatedUpper;
+    std::optional<ExternalTime> translatedLower, translatedUpper;
     auto _CanTranslate = [&time, &upperInClip, &lowerInClip, this, 
                           &translatedLower, &translatedUpper](
         const TimeMappings& mappings, size_t i1, size_t i2,
@@ -331,19 +314,19 @@ Usd_Clip::_GetBracketingTimeSamplesForPathFromClipLayer(
 
         if (lower <= timeInClip && timeInClip <= upper) {
             if (map1.internalTime != map2.internalTime) {
-                translated.reset(
-                    this->_TranslateTimeToExternal(timeInClip, i1, i2));
+                translated =
+                    this->_TranslateTimeToExternal(timeInClip, i1, i2);
             } else {
                 const bool lowerUpperMatch = (lowerInClip == upperInClip);
                 if (lowerUpperMatch && time == map1.externalTime) {
-                    translated.reset(map1.externalTime);
+                    translated = map1.externalTime;
                 } else if (lowerUpperMatch && time == map2.externalTime) {
-                    translated.reset(map2.externalTime);
+                    translated = map2.externalTime;
                 } else {
                     if (translatingLower) {
-                        translated.reset(map1.externalTime);
+                        translated = map1.externalTime;
                     } else {
-                        translated.reset(map2.externalTime);
+                        translated = map2.externalTime;
                     }
                 }
             }
@@ -378,17 +361,17 @@ Usd_Clip::_GetBracketingTimeSamplesForPathFromClipLayer(
         // The 'timingOutsideClip' test case in testUsdModelClips exercises
         // this behavior.
         if (lowerInClip < times->front().internalTime) {
-            translatedLower.reset(times->front().externalTime);
+            translatedLower = times->front().externalTime;
         }
         else if (lowerInClip > times->back().internalTime) {
-            translatedLower.reset(times->back().externalTime);
+            translatedLower = times->back().externalTime;
         }
 
         if (upperInClip < times->front().internalTime) {
-            translatedUpper.reset(times->front().externalTime);
+            translatedUpper = times->front().externalTime;
         }
         else if (upperInClip > times->back().internalTime) {
-            translatedUpper.reset(times->back().externalTime);
+            translatedUpper = times->back().externalTime;
         }
     }
             
@@ -930,7 +913,7 @@ Usd_Clip::QueryTimeSample(
     return true;
 }
 
-#define _INSTANTIATE_QUERY_TIME_SAMPLE(r, unused, elem)         \
+#define _INSTANTIATE_QUERY_TIME_SAMPLE(unused, elem)            \
     template bool Usd_Clip::QueryTimeSample(                    \
         const SdfPath&, Usd_Clip::ExternalTime,                 \
         Usd_InterpolatorBase*,                                  \
@@ -940,7 +923,7 @@ Usd_Clip::QueryTimeSample(
         Usd_InterpolatorBase*,                                  \
         SDF_VALUE_CPP_ARRAY_TYPE(elem)*) const;
 
-BOOST_PP_SEQ_FOR_EACH(_INSTANTIATE_QUERY_TIME_SAMPLE, ~, SDF_VALUE_TYPES)
+TF_PP_SEQ_FOR_EACH(_INSTANTIATE_QUERY_TIME_SAMPLE, ~, SDF_VALUE_TYPES)
 #undef _INSTANTIATE_QUERY_TIME_SAMPLE
 
 template bool Usd_Clip::QueryTimeSample(

@@ -7,17 +7,14 @@ if (NOT ${PXR_BUILD_GPU_SUPPORT} OR NOT ${PXR_ENABLE_METAL_SUPPORT})
     return()
 endif()
 
-FIND_LIBRARY(METAL_LIBRARY Metal)
-FIND_LIBRARY(APPUIKIT_LIBRARY AppKit)
-
 pxr_library(hgiMetal
     LIBRARIES
         arch
         hgi
         tf
         trace
-        ${METAL_LIBRARY}
-        ${APPUIKIT_LIBRARY}
+        "-framework Metal"
+        "-framework AppKit"
 
     PUBLIC_HEADERS
         api.h
@@ -66,4 +63,6 @@ pxr_library(hgiMetal
 
     RESOURCE_FILES
         plugInfo.json
+
+    DISABLE_PRECOMPILED_HEADERS
 )

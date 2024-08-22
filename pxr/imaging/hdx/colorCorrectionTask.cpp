@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/colorCorrectionTask.h"
 #include "pxr/imaging/hdx/package.h"
@@ -35,6 +18,8 @@
 #include "pxr/imaging/hgi/graphicsCmdsDesc.h"
 #include "pxr/imaging/hgi/hgi.h"
 #include "pxr/imaging/hgi/tokens.h"
+
+#include "pxr/base/work/dispatcher.h"
 
 #include <iostream>
 
@@ -64,6 +49,7 @@ HdxColorCorrectionTask::HdxColorCorrectionTask(
     HdSceneDelegate* delegate,
     SdfPath const& id)
   : HdxTask(id)
+  , _workDispatcher(std::make_unique<WorkDispatcher>())
 {
     _params.lut3dSizeOCIO = HDX_DEFAULT_LUT3D_SIZE_OCIO;
 }
@@ -73,8 +59,8 @@ HdxColorCorrectionTask::~HdxColorCorrectionTask()
     // If we had queued up work in Sync(), we expect a subsequent
     // invokation of Execute() will have waited on completion.
     // However, as a precaution, cancel and wait on any tasks here.
-    _workDispatcher.Cancel();
-    _workDispatcher.Wait();
+    _workDispatcher->Cancel();
+    _workDispatcher->Wait();
 
     if (_aovSampler) {
         _GetHgi()->DestroySampler(&_aovSampler);
@@ -139,7 +125,7 @@ HdxColorCorrectionTask::_GetUseOcio() const
 #if OCIO_VERSION_HEX < 0x02000000
 
 void
-HdxColorCorrectionTask::_CreateOpenColorIOResources(
+HdxColorCorrectionTask::_CreateOpenColorIOResourcesImpl(
     Hgi *hgi,
     HdxColorCorrectionTaskParams const& params,
     HdxColorCorrectionTask::_OCIOResources *result)
@@ -289,7 +275,7 @@ struct HdxColorCorrectionTask_UboBuilder {
 };
 
 void
-HdxColorCorrectionTask::_CreateOpenColorIOResources(
+HdxColorCorrectionTask::_CreateOpenColorIOResourcesImpl(
     Hgi *hgi,
     HdxColorCorrectionTaskParams const& params,
     HdxColorCorrectionTask::_OCIOResources *result)
@@ -346,9 +332,9 @@ HdxColorCorrectionTask::_CreateOpenColorIOResources(
     shaderDesc->setFunctionName("OCIODisplay");
     const float *lutValues = nullptr;
     shaderDesc->setLanguage(
-        hgi->GetAPIName() == HgiTokens->OpenGL ?
-                    OCIO::GPU_LANGUAGE_GLSL_4_0 :
-                    OCIO::GPU_LANGUAGE_MSL_2_0);
+        hgi->GetAPIName() == HgiTokens->Metal ?
+                    OCIO::GPU_LANGUAGE_MSL_2_0 :
+                    OCIO::GPU_LANGUAGE_GLSL_4_0);
     gpuProcessor->extractGpuShaderInfo(shaderDesc);
 
     //
@@ -389,6 +375,7 @@ HdxColorCorrectionTask::_CreateOpenColorIOResources(
 
         // Sampler description
         HgiSamplerDesc sampDesc;
+        sampDesc.debugName = samplerName;
         sampDesc.magFilter = HgiSamplerFilterLinear;
         sampDesc.minFilter = HgiSamplerFilterLinear;
         sampDesc.addressModeU = HgiSamplerAddressModeClampToEdge;
@@ -408,8 +395,16 @@ HdxColorCorrectionTask::_CreateOpenColorIOResources(
         uint32_t width, height;
         OCIO::GpuShaderCreator::TextureType channel;
         OCIO::Interpolation interpolation;
+
+#if OCIO_VERSION_HEX >= 0x02030000
+        OCIO::GpuShaderCreator::TextureDimensions dimensions;
+        shaderDesc->getTexture(i, textureName, samplerName, width, height,
+                                channel, dimensions, interpolation);
+#else
         shaderDesc->getTexture(i, textureName, samplerName, width, height,
                                 channel, interpolation);
+#endif // OCIO_VERSION_HEX >= 0x02030000
+
         shaderDesc->getTextureValues(i, lutValues);
 
         int channelPerPix =
@@ -431,7 +426,14 @@ HdxColorCorrectionTask::_CreateOpenColorIOResources(
         // Texture description
         HgiTextureDesc texDesc;
         texDesc.debugName = textureName;
-        texDesc.type = height == 1 ? HgiTextureType1D : HgiTextureType2D;
+        texDesc.type =
+#if OCIO_VERSION_HEX >= 0x02030000
+            dimensions == OCIO::GpuShaderCreator::TextureDimensions::TEXTURE_1D
+                ? HgiTextureType1D
+                : HgiTextureType2D;
+#else
+            height == 1 ? HgiTextureType1D : HgiTextureType2D;
+#endif // OCIO_VERSION_HEX >= 0x02030000
         texDesc.dimensions = GfVec3i(width, height, 1);
         texDesc.format = fmt;
         texDesc.layerCount = 1;
@@ -551,28 +553,47 @@ HdxColorCorrectionTask::_CreateOpenColorIOShaderCode(
         }
         else
         {
-            // For OpenGL case:
+            // For OpenGL and Vulkan case:
             // Since OCIO textures don't have a binding index, we use
             // the declaration provided by Hgi that has a proper
             // binding and layout. Therefore we subsitute sampler
             // name in the shader code in all its use-cases with the
             // one Hgi provides.
-            size_t samplerNameLength = texInfo.samplerName.length();
-            size_t offset = ocioGpuShaderText.find(texInfo.samplerName);
-            if (offset != std::string::npos)
-            {
-                offset += samplerNameLength;
-                    // ignore first occurance that is variable definition
-                offset = ocioGpuShaderText.find(texInfo.samplerName, offset);
-                while (offset != std::string::npos)
-                {
-                    size_t texNameLength = texInfo.texName.length();
-                    ocioGpuShaderText.replace(
-                        offset, samplerNameLength,
-                        texInfo.texName.c_str(), texNameLength);
+            if (TF_VERIFY(!texInfo.texName.empty() &&
+                          !texInfo.samplerName.empty())) {
+                const size_t texNameLength = texInfo.texName.length();
+                const size_t samplerNameLength = texInfo.samplerName.length();
 
-                    offset += texNameLength;
-                    offset = ocioGpuShaderText.find(texInfo.samplerName, offset);
+                size_t offset = ocioGpuShaderText.find(texInfo.samplerName);
+                if (offset != std::string::npos)
+                {
+                    // Remove entire line containing first occurrence
+                    // (the variable declaration).
+                    size_t prevNewLineOffset = ocioGpuShaderText.rfind(
+                        "\n", offset);
+                    size_t nextNewLineOffset = ocioGpuShaderText.find(
+                        "\n", offset);
+                    if (prevNewLineOffset == std::string::npos) {
+                        prevNewLineOffset = 0;
+                    }
+                    if (nextNewLineOffset == std::string::npos) {
+                        nextNewLineOffset = ocioGpuShaderText.length();
+                    }
+                    ocioGpuShaderText.erase(prevNewLineOffset,
+                        nextNewLineOffset - prevNewLineOffset);
+
+                    // Now find and replace second occurrence.
+                    offset = ocioGpuShaderText.find(texInfo.samplerName);
+                    while (offset != std::string::npos)
+                    {
+                        ocioGpuShaderText.replace(
+                            offset, samplerNameLength,
+                            texInfo.texName.c_str(), texNameLength);
+
+                        offset += texNameLength;
+                        offset = ocioGpuShaderText.find(
+                                    texInfo.samplerName, offset);
+                    }
                 }
             }
         }
@@ -626,7 +647,7 @@ HdxColorCorrectionTask::_CreateOpenColorIOShaderCode(
 #else // PXR_OCIO_PLUGIN_ENABLED
 
 void
-HdxColorCorrectionTask::_CreateOpenColorIOResources(
+HdxColorCorrectionTask::_CreateOpenColorIOResourcesImpl(
     Hgi *hgi,
     HdxColorCorrectionTaskParams const& params,
     HdxColorCorrectionTask::_OCIOResources *result)
@@ -646,8 +667,22 @@ HdxColorCorrectionTask::_CreateOpenColorIOShaderCode(
 
 #endif // PXR_OCIO_PLUGIN_ENABLED
 
-
-
+void
+HdxColorCorrectionTask::_CreateOpenColorIOResources(
+    Hgi *hgi,
+    HdxColorCorrectionTaskParams const& params,
+    _OCIOResources *result)
+{
+    // Put any calls to OCIO within a try-catch.
+    try {
+        _CreateOpenColorIOResourcesImpl(hgi, params, result);
+    } catch (const std::exception& e) {
+        TF_WARN("_CreateOpenColorIOResourcesImpl threw a C++ exception: %s",
+            e.what());
+    } catch (...) {
+        TF_WARN("_CreateOpenColorIOResourcesImpl threw a C++ exception.");
+    }
+}
 
 void
 HdxColorCorrectionTask::_CreateOpenColorIOLUTBindings(
@@ -718,7 +753,14 @@ HdxColorCorrectionTask::_CreateShaderResources()
         return true;
     }
 
-    const bool useOCIO =_GetUseOcio();
+    bool useOCIO =_GetUseOcio();
+    if (useOCIO) {
+        // Ensure the OICO resource prep task has completed.
+        _workDispatcher->Wait();
+        // Don't use OCIO if we weren't able to fill _ocioResources.
+        useOCIO = !_ocioResources.gpuShaderText.empty();
+    }
+
     const HioGlslfx glslfx(
             HdxPackageColorCorrectionShader(), HioGlslfxTokens->defVal);
 
@@ -763,9 +805,6 @@ HdxColorCorrectionTask::_CreateShaderResources()
         // Our current version of OCIO outputs 130 glsl and texture3D is
         // removed from glsl in 140.
         fsCode += "#define texture3D texture\n";
-
-        // Ensure the OICO resource prep task has completed.
-        _workDispatcher.Wait();
 
         // Discard prior GPU resources.
         for (TextureSamplerInfo &textureLut : _textureLUTs) {
@@ -1061,9 +1100,9 @@ HdxColorCorrectionTask::_Sync(HdSceneDelegate* delegate,
             // It is possible for the prior prep task to have not
             // yet completed, so cancel and wait on it before enqueuing
             // a new task with updated parameters.
-            _workDispatcher.Cancel();
-            _workDispatcher.Wait();
-            _workDispatcher.Run(&_CreateOpenColorIOResources,
+            _workDispatcher->Cancel();
+            _workDispatcher->Wait();
+            _workDispatcher->Run(&_CreateOpenColorIOResources,
                                 _GetHgi(),
                                 _params,
                                 &_ocioResources);
@@ -1103,6 +1142,15 @@ HdxColorCorrectionTask::Execute(HdTaskContext* ctx)
     _GetTaskContextData(
         ctx, HdxAovTokens->colorIntermediate, &aovTextureIntermediate);
 
+    // We need to ensure the incoming color buffer is set to the correct layout
+    // ie: Shader Read Only Optimal
+    // since we are going to be sampling from this buffer and writing to a 
+    // color-corrected intermediate buffer.
+    // However, the intermediate color-corrected buffer is in the correct layout
+    // ie: Color Attachment Optimal.
+    // So, no layout transition there.
+    aovTexture->SubmitLayoutChange(HgiTextureUsageBitsShaderRead);
+
     if (!TF_VERIFY(_CreateBufferResources())) {
         return;
     }
@@ -1120,6 +1168,12 @@ HdxColorCorrectionTask::Execute(HdTaskContext* ctx)
     }
 
     _ApplyColorCorrection(aovTextureIntermediate);
+
+    // Before we ping-pong the buffers, we are going to ensure the color buffer 
+    // is converted to a Color Attachment Optimal layout.
+    // Hence, preserving the state atomicity of this pass.
+    // Otherwise, it's business as usual.
+    aovTexture->SubmitLayoutChange(HgiTextureUsageBitsColorTarget);
 
     // Toggle color and colorIntermediate
     _ToggleRenderTarget(ctx);

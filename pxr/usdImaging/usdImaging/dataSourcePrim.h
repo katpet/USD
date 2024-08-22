@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_IMAGING_DATA_SOURCE_PRIM_H
 #define PXR_USD_IMAGING_USD_IMAGING_DATA_SOURCE_PRIM_H
@@ -31,7 +14,6 @@
 
 #include "pxr/usd/usdGeom/xformable.h"
 #include "pxr/usd/usdGeom/boundable.h"
-#include "pxr/usd/usdGeom/modelAPI.h"
 
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usdImaging/usdImaging/dataSourceStageGlobals.h"
@@ -207,19 +189,24 @@ HD_DECLARE_DATASOURCE_HANDLES(UsdImagingDataSourceExtent);
 
 /// \class UsdImagingDataSourceExtentsHint
 ///
-/// Data source representing extents hint of a model API prim.
-class UsdImagingDataSourceExtentsHint : public HdVectorDataSource
+/// Data source representing extents hint of a geom model API prim.
+class UsdImagingDataSourceExtentsHint : public HdContainerDataSource
 {
 public:
     HD_DECLARE_DATASOURCE(UsdImagingDataSourceExtentsHint);
 
-    /// Returns number of vec3 pairs authored on extentsHint.
+    /// Returns names of (hydra) purposes for which we have extentsHint.
     ///
-    size_t GetNumElements() override;
+    /// extentsHint in usd is an array. The names are computed using
+    /// the lenth of this array, by truncating
+    /// UsdGeomImagable::GetOrderedPurposeTokens() (and translating
+    /// UsdGeomTokens->default_ to HdTokens->geometry).
+    ///
+    TfTokenVector GetNames() override;
 
-    /// Returns i-th pair of vec3 authored on extentsHint as
-    /// extent schema.
-    HdDataSourceBaseHandle GetElement(size_t element) override;
+    /// Takes the hydra name of a purpose and returns the corresponding
+    /// values from extentsHint as HdExtentSchema.
+    HdDataSourceBaseHandle Get(const TfToken &name) override;
 
 private:
     /// Use to construct a new UsdImagingDataSourceExtentsHint.
@@ -242,7 +229,6 @@ private:
 };
 
 HD_DECLARE_DATASOURCE_HANDLES(UsdImagingDataSourceExtent);
-
 
 // ----------------------------------------------------------------------------
 
@@ -393,49 +379,6 @@ private:
 };
 
 HD_DECLARE_DATASOURCE_HANDLES(UsdImagingDataSourceXform);
-
-// ----------------------------------------------------------------------------
-
-///
-/// \class UsdImagingDataSourceModel
-///
-/// Data source representing model API for a USD prim.
-///
-class UsdImagingDataSourceModel : public HdContainerDataSource
-{
-public:
-    HD_DECLARE_DATASOURCE(UsdImagingDataSourceModel);
-
-    /// Return attribute names of UsdImagingModelSchema.
-    ///
-    TfTokenVector GetNames() override;
-
-    /// Returns data authored on USD prim (without resolving inherited) for
-    /// attribute names of UsdImagingModelSchema.
-    ///
-    HdDataSourceBaseHandle Get(const TfToken &name) override;
-
-private:
-    /// C'tor.
-    ///
-    /// \p model is API schema from which this class can extract values from.
-    /// \p sceneIndexPath is the path of this object in the scene index.
-    /// \p stageGlobals represents the context object for the UsdStage with
-    /// which to evaluate this attribute data source.
-    ///
-    /// Note: client code calls this via static New().
-    UsdImagingDataSourceModel(
-            const UsdGeomModelAPI &model,
-            const SdfPath &sceneIndexPath,
-            const UsdImagingDataSourceStageGlobals &stageGlobals);
-
-private:
-    UsdGeomModelAPI _model;
-    const SdfPath _sceneIndexPath;
-    const UsdImagingDataSourceStageGlobals &_stageGlobals;
-};
-
-HD_DECLARE_DATASOURCE_HANDLES(UsdImagingDataSourceModel);
 
 // ----------------------------------------------------------------------------
 

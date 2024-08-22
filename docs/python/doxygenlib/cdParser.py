@@ -1,26 +1,8 @@
 #
 # Copyright 2023 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 # cdParser.py
 #
@@ -42,12 +24,17 @@ class XMLNode:
     """
     Rrepresent a single node in the XML tree.
     """
+    __slots__ = ("parent", "name", "attrs", "text", "childNodes")
+
     def __init__(self, parent, name, attrs, text):
         self.parent = parent
         self.name = name
         self.attrs = attrs
         self.text = text
         self.childNodes = []
+
+    def __repr__(self) -> str:
+        return "XMLNode(%s, %s, ...)" % (self.name, self.attrs.items())
 
     def addChildNode(self, node):
         """Append the specifed node to the children of this node."""
@@ -221,8 +208,7 @@ class Parser:
                     continue
                 if (kind == "dir"):
                     continue
-                if (kind == "file"):
-                    continue
+                # we need to keep kind == "file" because this holds info on functions
                 refid = compound_element.get('refid')
                 # Individual entity XML generated XML files are <refid>.xml
                 entity_file_name = refid + ".xml"
@@ -357,7 +343,8 @@ class Parser:
             if child.name == 'param':
                 pname = child.getText('declname')
                 ptype = child.getText('type')
-                params.append((ptype, pname))
+                pdefault = child.getText('defval') or None
+                params.append(Param(ptype, pname, pdefault))
         return params
 
     def __createDocElement(self, node):
@@ -382,7 +369,10 @@ class Parser:
             prot = ''
             doc = self.__getAllDocStrings(node, name)
             location = node.getLocation()
-            ret = DocElement(name, kind, prot, doc, location)
+            if location != ('', ''):
+                # These elements shadow class elements of the same name, but they 
+                # lack any valuable information, and thus create empty docstrings.
+                ret = DocElement(name, kind, prot, doc, location)
         elif node.name == 'compounddef':
             kind = node.getKind()
             if kind == 'class' or kind == 'struct':

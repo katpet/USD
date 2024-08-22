@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_APP_UTILS_FRAME_RECORDER_H
 #define PXR_USD_IMAGING_USD_APP_UTILS_FRAME_RECORDER_H
@@ -86,6 +69,20 @@ public:
         return succeeded;
     }
 
+    /// Sets the path to the render pass prim to use.
+    ///
+    /// \note If there is a render settings prim designated by the
+    /// render pass prim via renderSource, it must also be set
+    /// with SetActiveRenderSettingsPrimPath().
+    USDAPPUTILS_API
+    void SetActiveRenderPassPrimPath(SdfPath const& path);
+
+    /// Sets the path to the render settings prim to use.
+    ///
+    /// \see SetActiveRenderPassPrimPath()
+    USDAPPUTILS_API
+    void SetActiveRenderSettingsPrimPath(SdfPath const& path);
+
     /// Sets the width of the recorded image.
     ///
     /// The height of the recorded image will be computed using this value and
@@ -113,6 +110,20 @@ public:
     USDAPPUTILS_API
     void SetColorCorrectionMode(const TfToken& colorCorrectionMode);
 
+    /// Turns the built-in camera light on or off.
+    ///
+    /// When on, this will add a light at the camera's origin.
+    /// This is sometimes called a "headlight".
+    USDAPPUTILS_API
+    void SetCameraLightEnabled(bool cameraLightEnabled);
+
+    /// Sets the camera visibility of dome lights.
+    ///
+    /// When on, dome light textures will be drawn to the background as if
+    /// mapped onto a sphere infinitely far away.
+    USDAPPUTILS_API
+    void SetDomeLightVisibility(bool domeLightsVisible);
+
     /// Sets the UsdGeomImageable purposes to be used for rendering
     ///
     /// We will __always__ include "default" purpose, and by default,
@@ -130,6 +141,12 @@ public:
     /// If \p usdCamera is not a valid camera, a camera will be computed
     /// to automatically frame the stage geometry.
     ///
+    /// When we are using a RenderSettings prim, the generated image will be 
+    /// written to the file indicated on the connected RenderProducts, 
+    /// instead of the given \p outputImagePath. Note that in this case the
+    /// given \p usdCamera will later be overridden by the one authored on the 
+    /// RenderSettings Prim. 
+    ///
     /// Returns true if the image was generated and written successfully, or
     /// false otherwise.
     USDAPPUTILS_API
@@ -145,6 +162,10 @@ private:
     float _complexity;
     TfToken _colorCorrectionMode;
     TfTokenVector _purposes;
+    SdfPath _renderPassPrimPath;
+    SdfPath _renderSettingsPrimPath;
+    bool _cameraLightEnabled;
+    bool _domeLightsVisible;
 };
 
 

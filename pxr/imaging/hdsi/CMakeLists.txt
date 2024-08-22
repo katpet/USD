@@ -20,16 +20,23 @@ pxr_library(hdsi
         extComputationPrimvarPruningSceneIndex
         implicitSurfaceSceneIndex
         legacyDisplayStyleOverrideSceneIndex
+        lightLinkingSceneIndex
         materialBindingResolvingSceneIndex
         materialPrimvarTransferSceneIndex
         nurbsApproximatingSceneIndex
         pinnedCurveExpandingSceneIndex
+        primManagingSceneIndexObserver
+        primTypeNoticeBatchingSceneIndex
         primTypePruningSceneIndex
         renderSettingsFilteringSceneIndex
         sceneGlobalsSceneIndex
+        tetMeshConversionSceneIndex
+        utils
+        velocityMotionResolvingSceneIndex
 
     PUBLIC_HEADERS
         api.h
+        version.h
 )
 
 pxr_build_test(testHdsiPinnedCurveExpandingSceneIndex

@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -27,6 +10,8 @@
 #include "pxr/usd/pcp/layerStack.h"
 #include "pxr/usd/pcp/node_Iterator.h"
 #include "pxr/usd/pcp/primIndex_StackFrame.h"
+#include "pxr/usd/pcp/strengthOrdering.h"
+#include "pxr/usd/pcp/utils.h"
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/base/vt/value.h"
 
@@ -74,6 +59,9 @@ private:
         bool strongestOpinionOnly = true)
         : _iterator(context->_parentNode, context->_previousStackFrame)
         , _strongestOpinionOnly(strongestOpinionOnly)
+        , _parent(context->_parentNode)
+        , _pathInNode(context->_pathInNode)
+        , _arcNum(context->_arcNum)
     {
     }
 
@@ -81,13 +69,14 @@ private:
     // composition should stop.
     template <typename ComposeFunc>
     bool _ComposeOpinionInSubtree(const PcpNodeRef &node,
+                                  const SdfPath &pathInNode,
                                   const TfToken &propName,
                                   const TfToken &fieldName, 
                                   const ComposeFunc &composeFunc)
     {
         // Get the prim or property path within the node's spec.
         const SdfPath &path = propName.IsEmpty() ? 
-            node.GetPath() : node.GetPath().AppendProperty(propName);
+            pathInNode : pathInNode.AppendProperty(propName);
 
         // Search the node's layer stack in strength order for the field on
         // the spec.
@@ -104,14 +93,43 @@ private:
             }
         }
 
+        const bool isParent = node == _parent;
         TF_FOR_ALL(childNode, Pcp_GetChildrenRange(node)) {
+            // If this is the parent, check if each of its children
+            // is weaker than the future node
+            if (isParent) {
+                if (PcpCompareSiblingPayloadNodeStrength(
+                    _parent, _arcNum, *childNode) == -1) {
+                    return true;
+                }
+            }
+            // Map the path in this node to the next child node, also applying
+            // any variant selections represented by the child node.
+            SdfPath pathInChildNode = 
+                childNode->GetMapToParent().MapTargetToSource(
+                    pathInNode.StripAllVariantSelections());
+            if (pathInChildNode.IsEmpty()) {
+                continue;
+            }
+
+            if (const SdfPath childNodePathAtIntro =
+                    childNode->GetPathAtIntroduction();
+                childNodePathAtIntro.ContainsPrimVariantSelection()) {
+
+                pathInChildNode = pathInChildNode.ReplacePrefix(
+                    childNodePathAtIntro.StripAllVariantSelections(),
+                    childNodePathAtIntro);
+            }
+
             if (_ComposeOpinionInSubtree(
-                    *childNode, propName, fieldName, composeFunc)) {
+                    *childNode, pathInChildNode, 
+                    propName, fieldName, composeFunc)) {
                 return true;
             }
         }
 
-        return false;
+        // Do not look for opinions from nodes weaker than the parent.
+        return isParent;
     };
 
     // Recursively composes opinions from ancestors of the parent node and 
@@ -123,21 +141,45 @@ private:
         const TfToken &fieldName, 
         const ComposeFunc &composeFunc)
     {
-        PcpNodeRef currentNode = _iterator.node;
+        return _ComposeOpinionFromAncestors(
+            _iterator.node, _pathInNode.IsEmpty() ? _iterator.node.GetPath() : 
+            _pathInNode,  propName, fieldName, composeFunc);
+    }
 
-        // Try parent node.
-        _iterator.Next();
-        if (_iterator.node) {
-            // Recurse on parent node's ancestors.
+    template <typename ComposeFunc>
+    bool _ComposeOpinionFromAncestors(
+        const PcpNodeRef &node,
+        const SdfPath &pathInNode,
+        const TfToken &propName,
+        const TfToken &fieldName, 
+        const ComposeFunc &composeFunc)
+    {
+        // Translate the path from the given node's namespace to
+        // the root of the node's prim index.
+        const auto [rootmostPath, rootmostNode] = 
+            Pcp_TranslatePathFromNodeToRootOrClosestNode(node, pathInNode);
+
+        // If we were able to translate the path all the way to the root
+        // node, and we're in the middle of a recursive prim indexing
+        // call, map across the previous frame and recurse.
+        if (rootmostNode.IsRootNode() && _iterator.previousFrame) {
+            PcpNodeRef parentNode = _iterator.previousFrame->parentNode;
+            SdfPath parentNodePath = _iterator.previousFrame->arcToParent->
+                mapToParent.MapSourceToTarget(
+                    rootmostPath.StripAllVariantSelections());
+
+            _iterator.NextFrame();
+
             if (_ComposeOpinionFromAncestors(
-                    propName, fieldName, composeFunc)) {
+                    parentNode, parentNodePath, propName, fieldName,
+                    composeFunc)) {
                 return true;
             }
         }
 
-        // Otherwise compose from the current node and its subtrees.
+        // Compose opinions in the subtree.
         if (_ComposeOpinionInSubtree(
-                currentNode, propName, fieldName, composeFunc)) {
+                rootmostNode, rootmostPath, propName, fieldName, composeFunc)) {
             return true;
         }
         return false;
@@ -147,14 +189,21 @@ private:
     PcpPrimIndex_StackFrameIterator _iterator;
     bool _strongestOpinionOnly;
     bool _foundValue {false};
+    PcpNodeRef _parent;
+    SdfPath _pathInNode;
+    int _arcNum;
 };
 
 PcpDynamicFileFormatContext::PcpDynamicFileFormatContext(
     const PcpNodeRef &parentNode, 
+    const SdfPath &pathInNode,
+    int arcNum,
     PcpPrimIndex_StackFrame *previousStackFrame,
     TfToken::Set *composedFieldNames,
     TfToken::Set *composedAttributeNames)
     : _parentNode(parentNode)
+    , _pathInNode(pathInNode)
+    , _arcNum(arcNum)
     , _previousStackFrame(previousStackFrame)
     , _composedFieldNames(composedFieldNames)
     , _composedAttributeNames(composedAttributeNames)
@@ -283,12 +332,15 @@ PcpDynamicFileFormatContext::ComposeAttributeDefaultValue(
 // be used by prim indexing.
 PcpDynamicFileFormatContext
 Pcp_CreateDynamicFileFormatContext(const PcpNodeRef &parentNode, 
+                                   const SdfPath &ancestralPath,
+                                   int arcNum,
                                    PcpPrimIndex_StackFrame *previousFrame,
                                    TfToken::Set *composedFieldNames,
                                    TfToken::Set *composedAttributeNames)
 {
     return PcpDynamicFileFormatContext(
-        parentNode, previousFrame, composedFieldNames, composedAttributeNames);
+        parentNode, ancestralPath, arcNum, previousFrame, composedFieldNames, 
+        composedAttributeNames);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

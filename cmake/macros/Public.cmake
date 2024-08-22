@@ -1,29 +1,20 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 include(Private)
 
 function(pxr_build_documentation)
+    # Cmake booleans are often, ie, "OFF", while Doxyfile requires booleans
+    # to be "YES" or "NO"
+    if(PXR_BUILD_HTML_DOCUMENTATION)
+        set(DOXYGEN_GENERATE_HTML "YES")
+    else()
+        set(DOXYGEN_GENERATE_HTML "NO")
+    endif()
+
     configure_file(${PROJECT_SOURCE_DIR}/docs/doxygen/Doxyfile.in
                    ${PROJECT_BINARY_DIR}/Doxyfile)
 
@@ -45,7 +36,7 @@ function(pxr_build_documentation)
     # Execute doxygen during the install step. All of the files we want
     # doxygen to process should already have been copied to the docs
     # directory during the build step
-    install(CODE "execute_process(COMMAND ${DOXYGEN_EXECUTABLE} ${PROJECT_BINARY_DIR}/Doxyfile)")
+    install(CODE "execute_process(COMMAND ${DOXYGEN_EXECUTABLE} \"${PROJECT_BINARY_DIR}/Doxyfile\")")
 
     set(INST_DOCS_ROOT  "${CMAKE_INSTALL_PREFIX}/docs")
 
@@ -55,11 +46,13 @@ function(pxr_build_documentation)
         DESTINATION ${INST_DOCS_ROOT}
     )
 
-    set(BUILT_HTML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_html")
-    install(
-        DIRECTORY ${BUILT_HTML_DOCS}
-        DESTINATION ${INST_DOCS_ROOT}
-    )
+    if(PXR_BUILD_HTML_DOCUMENTATION)
+        set(BUILT_HTML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_html")
+        install(
+            DIRECTORY ${BUILT_HTML_DOCS}
+            DESTINATION ${INST_DOCS_ROOT}
+        )
+    endif()
 
     set(BUILT_XML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_xml")
     install(
@@ -409,10 +402,14 @@ function (pxr_create_test_module MODULE_NAME)
         return()
     endif()
 
-    cmake_parse_arguments(tm "" "INSTALL_PREFIX;SOURCE_DIR" "" ${ARGN})
+    cmake_parse_arguments(tm "" "INSTALL_PREFIX;SOURCE_DIR;DEST_DIR" "" ${ARGN})
 
     if (NOT tm_SOURCE_DIR)
         set(tm_SOURCE_DIR testenv)
+    endif()
+
+    if (NOT tm_DEST_DIR)
+        set(tm_DEST_DIR ${MODULE_NAME})
     endif()
 
     # Look specifically for an __init__.py and a plugInfo.json prefixed by the
@@ -428,7 +425,7 @@ function (pxr_create_test_module MODULE_NAME)
             RENAME 
                 __init__.py
             DESTINATION 
-                tests/${tm_INSTALL_PREFIX}/lib/python/${MODULE_NAME}
+                tests/${tm_INSTALL_PREFIX}/lib/python/${tm_DEST_DIR}
         )
     endif()
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${plugInfoFile}")
@@ -438,7 +435,7 @@ function (pxr_create_test_module MODULE_NAME)
             RENAME 
                 plugInfo.json
             DESTINATION 
-                tests/${tm_INSTALL_PREFIX}/lib/python/${MODULE_NAME}
+                tests/${tm_INSTALL_PREFIX}/lib/python/${tm_DEST_DIR}
         )
     endif()
 endfunction() # pxr_create_test_module
@@ -834,6 +831,10 @@ function(pxr_register_test TEST_NAME)
     # directory where these files are installed.
     if (NOT TARGET shared_libs)
         set(testWrapperCmd ${testWrapperCmd} --env-var=${PXR_PLUGINPATH_NAME}=${CMAKE_INSTALL_PREFIX}/lib/usd)
+    endif()
+
+    if (PXR_TEST_RUN_TEMP_DIR_PREFIX)
+          set(testWrapperCmd ${testWrapperCmd} --tempdirprefix=${PXR_TEST_RUN_TEMP_DIR_PREFIX})
     endif()
 
     # Ensure that Python imports the Python files built by this build.
@@ -1270,12 +1271,50 @@ function(pxr_build_python_documentation)
     string(REPLACE ";" "," pxrPythonModulesStr "${pxrPythonModules}")
     # Run convertDoxygen on the module list, setting PYTHONPATH 
     # to the install path for the USD Python modules
-    install(CODE "execute_process(\
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/cmake \
-        COMMAND ${PYTHON_EXECUTABLE} ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} \
-        --package pxr --module ${pxrPythonModulesStr} \
-        --inputIndex ${BUILT_XML_DOCS}/index.xml \
-        --pythonPath ${CMAKE_INSTALL_PREFIX}/lib/python \
-        --output ${INSTALL_PYTHON_PXR_ROOT})")
+    if (WIN32)
+        set(DLL_PATH_FLAG "--dllPath \"${CMAKE_INSTALL_PREFIX}/lib;${CMAKE_INSTALL_PREFIX}/bin;${CMAKE_INSTALL_PREFIX}/plugin/usd;${CMAKE_INSTALL_PREFIX}/share/usd/examples/plugin\"")
+    else()
+        set(DLL_PATH_FLAG "")
+    endif()
+    install(CODE "\
+        execute_process(\
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/cmake \
+            RESULT_VARIABLE convert_doxygen_return_code
+            COMMAND ${PYTHON_EXECUTABLE} ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} \
+                --package pxr --module ${pxrPythonModulesStr} \
+                --inputIndex ${BUILT_XML_DOCS}/index.xml \
+                --pythonPath ${CMAKE_INSTALL_PREFIX}/lib/python \
+                ${DLL_PATH_FLAG} \
+                --output ${INSTALL_PYTHON_PXR_ROOT})
+        if (NOT \${convert_doxygen_return_code} EQUAL \"0\")
+            message( FATAL_ERROR \"Error generating python docstrings - ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} return code: \${convert_doxygen_return_code} \")
+        endif()
+    ")
 
 endfunction() # pxr_build_python_documentation
+
+# Adding support for a "docs-only" directory, needed when adding doxygen docs
+# not associated with a specific library/etc. 
+function(pxr_docs_only_dir NAME)
+    # Get list of doxygen files, which could include image files and/or 
+    # snippets example cpp files 
+    set(multiValueArgs
+        DOXYGEN_FILES
+    )
+    cmake_parse_arguments(args
+        ""
+        ""
+        "${multiValueArgs}"
+        ${ARGN}
+    )
+    if(PXR_BUILD_DOCUMENTATION)
+        _copy_doxygen_files(${NAME}
+            IS_LIB
+                FALSE
+            HEADER_INSTALL_PREFIX
+                "include/${PXR_PREFIX}"
+            DOXYGEN_FILES
+                ${args_DOXYGEN_FILES}
+        )
+    endif()
+endfunction() # pxr_docs_only_dir

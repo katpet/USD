@@ -1,18 +1,8 @@
 //
 // Copyright 2023 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License atNAMESPACE
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/dataSourceRenderPrims.h"
 
@@ -21,12 +11,16 @@
 #include "pxr/usdImaging/usdImaging/usdRenderSettingsSchema.h"
 #include "pxr/usdImaging/usdImaging/usdRenderVarSchema.h"
 
+#include "pxr/usd/usdRender/pass.h"
 #include "pxr/usd/usdRender/product.h"
 #include "pxr/usd/usdRender/settings.h"
 #include "pxr/usd/usdRender/spec.h"
 #include "pxr/usd/usdRender/var.h"
 
+#include "pxr/imaging/hd/renderPassSchema.h"
 #include "pxr/imaging/hd/retainedDataSource.h"
+
+#include "pxr/base/tf/token.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -70,6 +64,136 @@ _ComputeNamespacedSettings(const UsdPrim &prim)
             prim, /* namespaces */ TfTokenVector());
 }
 
+}
+
+// ----------------------------------------------------------------------------
+//                               RENDER PASS
+// ----------------------------------------------------------------------------
+namespace {
+
+///
+/// A container data source representing render pass
+///
+class _DataSourceRenderPass : public HdContainerDataSource
+{
+public:
+    HD_DECLARE_DATASOURCE(_DataSourceRenderPass);
+
+    static
+    const TfTokenVector& GetPropertyNames() {
+        // We do not supply all of the UsdRenderPass attributes,
+        // since some are for batch processing purposes.
+        static TfTokenVector names = {
+            UsdRenderTokens->passType,
+            UsdRenderTokens->renderSource };
+        return names;
+    }
+
+    TfTokenVector GetNames() override
+    {
+        return GetPropertyNames();
+    }
+
+    HdDataSourceBaseHandle Get(const TfToken &name) override
+    {
+        if (name == UsdRenderTokens->passType) {
+            TfToken passType;
+            if (_usdRenderPass.GetPassTypeAttr().Get(&passType)) {
+                return HdRetainedTypedSampledDataSource<TfToken>::New(passType);
+            }
+            return nullptr;
+        } else if (name == UsdRenderTokens->renderSource) {
+            if (UsdRelationship renderSourceRel =
+                _usdRenderPass.GetRenderSourceRel()) {
+                SdfPathVector targets; 
+                renderSourceRel.GetForwardedTargets(&targets);
+                if (!targets.empty()) {
+                    return HdRetainedTypedSampledDataSource<SdfPath>::New(
+                        targets[0]);
+                }
+            }
+            return nullptr;
+        }
+        return nullptr;
+    }
+
+private:
+
+    // Private constructor, use static New() instead.
+    _DataSourceRenderPass(
+            const SdfPath &sceneIndexPath,
+            UsdRenderPass usdRenderPass,
+            const UsdImagingDataSourceStageGlobals &stageGlobals)
+        : _sceneIndexPath(sceneIndexPath)
+        , _usdRenderPass(usdRenderPass)
+        , _stageGlobals(stageGlobals)
+    {}
+
+private:
+    const SdfPath _sceneIndexPath;
+    UsdRenderPass _usdRenderPass;
+    const UsdImagingDataSourceStageGlobals & _stageGlobals;
+};
+
+HD_DECLARE_DATASOURCE_HANDLES(_DataSourceRenderPass);
+
+}
+
+UsdImagingDataSourceRenderPassPrim::UsdImagingDataSourceRenderPassPrim(
+    const SdfPath &sceneIndexPath,
+    UsdPrim usdPrim,
+    const UsdImagingDataSourceStageGlobals &stageGlobals)
+    : UsdImagingDataSourcePrim(sceneIndexPath, usdPrim, stageGlobals)
+{
+}
+
+TfTokenVector 
+UsdImagingDataSourceRenderPassPrim::GetNames()
+{
+    // Note: Skip properties on UsdImagingDataSourcePrim.
+    return { HdRenderPassSchema::GetSchemaToken() };
+}
+
+HdDataSourceBaseHandle 
+UsdImagingDataSourceRenderPassPrim::Get(const TfToken & name)
+{
+    if (name == HdRenderPassSchema::GetSchemaToken()) {
+        return _DataSourceRenderPass::New(
+                    _GetSceneIndexPath(),
+                    UsdRenderPass(_GetUsdPrim()),
+                    _GetStageGlobals());
+    } 
+
+    // Note: Skip properties on UsdImagingDataSourcePrim.
+    return nullptr;
+}
+
+HdDataSourceLocatorSet
+UsdImagingDataSourceRenderPassPrim::Invalidate(
+    UsdPrim const& prim,
+    const TfToken &subprim,
+    const TfTokenVector &properties,
+    const UsdImagingPropertyInvalidationType invalidationType)
+
+{
+    TRACE_FUNCTION();
+
+    const TfTokenVector &names = _DataSourceRenderPass::GetPropertyNames();
+    static TfToken::HashSet tokensSet(names.begin(), names.end());
+
+    HdDataSourceLocatorSet locators;
+
+    for (const TfToken &propertyName : properties) {
+        if (tokensSet.find(propertyName) != tokensSet.end()) {
+            locators.insert(
+                HdRenderPassSchema::GetDefaultLocator()
+                    .Append(propertyName));
+        }
+        // Note: Skip UsdImagingDataSourcePrim::Invalidate(...)
+        // since none of the "base" set of properties are relevant here.
+    }
+
+    return locators;
 }
 
 // ----------------------------------------------------------------------------
@@ -209,18 +333,16 @@ UsdImagingDataSourceRenderSettingsPrim::Invalidate(
 {
     TRACE_FUNCTION();
 
-    const TfTokenVector &usdNames =
-        _DataSourceRenderSettings::GetPropertyNames();
+    const TfTokenVector &names = _DataSourceRenderSettings::GetPropertyNames();
+    static TfToken::HashSet tokensSet(names.begin(), names.end());
 
     HdDataSourceLocatorSet locators;
 
     for (const TfToken &propertyName : properties) {
-        if (std::find(usdNames.begin(), usdNames.end(), propertyName) != 
-                usdNames.end()) {
-
-                locators.insert(
-                    UsdImagingUsdRenderSettingsSchema::GetDefaultLocator()
-                        .Append(propertyName));
+        if (tokensSet.find(propertyName) != tokensSet.end()) {
+            locators.insert(
+                UsdImagingUsdRenderSettingsSchema::GetDefaultLocator()
+                    .Append(propertyName));
         } else {
             // It is likely that the property is an attribute that's
             // aggregated under "namespaced settings". For performance, skip
@@ -297,7 +419,22 @@ public:
         }
 
         if (UsdAttribute attr =
-                     _usdRenderProduct.GetPrim().GetAttribute(name)) {
+                _usdRenderProduct.GetPrim().GetAttribute(name)) {
+
+            // Only consider authored attributes in UsdRenderSettingsBase,
+            // to allow the targeting render settings prim's opinion to be
+            // inherited by the product via
+            // UsdImagingRenderSettingsFlatteningSceneIndex.
+            const TfTokenVector &settingsBaseTokens =
+                UsdRenderSettingsBase::GetSchemaAttributeNames();
+            static const TfToken::HashSet settingsBaseTokenSet(
+                settingsBaseTokens.begin(), settingsBaseTokens.end());
+            const bool attrInSettingsBase =
+                settingsBaseTokenSet.find(name) != settingsBaseTokenSet.end();
+
+            if (attrInSettingsBase && !attr.HasAuthoredValue()) {
+                return nullptr;
+            }
 
             return UsdImagingDataSourceAttributeNew(
                     attr,
@@ -372,26 +509,24 @@ UsdImagingDataSourceRenderProductPrim::Invalidate(
 {
     TRACE_FUNCTION();
 
-    const TfTokenVector &usdNames =
-        _DataSourceRenderProduct::GetPropertyNames();
+    const TfTokenVector &names = _DataSourceRenderProduct::GetPropertyNames();
+    static TfToken::HashSet tokensSet(names.begin(), names.end());
 
     HdDataSourceLocatorSet locators;
 
     for (const TfToken &propertyName : properties) {
-        if (std::find(usdNames.begin(), usdNames.end(), propertyName) != 
-                usdNames.end()) {
-
-                locators.insert(
-                    UsdImagingUsdRenderProductSchema::GetDefaultLocator()
-                        .Append(propertyName));
+        if (tokensSet.find(propertyName) != tokensSet.end()) {
+            locators.insert(
+                UsdImagingUsdRenderProductSchema::GetDefaultLocator()
+                    .Append(propertyName));
         }
         else {
-                // It is likely that the property is an attribute that's
-                // aggregated under "namespaced settings". For performance, skip
-                // validating whether that is the case.
-                locators.insert(
-                    UsdImagingUsdRenderProductSchema::
-                        GetNamespacedSettingsLocator());
+            // It is likely that the property is an attribute that's
+            // aggregated under "namespaced settings". For performance, skip
+            // validating whether that is the case.
+            locators.insert(
+                UsdImagingUsdRenderProductSchema::
+                    GetNamespacedSettingsLocator());
         }
         // Note: Skip UsdImagingDataSourcePrim::Invalidate(...)
         // since none of the "base" set of properties are relevant here.
@@ -441,7 +576,7 @@ public:
         }
 
         if (UsdAttribute attr =
-                     _usdRenderVar.GetPrim().GetAttribute(name)) {
+                _usdRenderVar.GetPrim().GetAttribute(name)) {
 
             return UsdImagingDataSourceAttributeNew(
                     attr,
@@ -516,25 +651,23 @@ UsdImagingDataSourceRenderVarPrim::Invalidate(
 {
     TRACE_FUNCTION();
 
-    const TfTokenVector &usdNames =
-        _DataSourceRenderVar::GetPropertyNames();
+    const TfTokenVector &names = _DataSourceRenderVar::GetPropertyNames();
+    static TfToken::HashSet tokensSet(names.begin(), names.end());
 
     HdDataSourceLocatorSet locators;
 
     for (const TfToken &propertyName : properties) {
-        if (std::find(usdNames.begin(), usdNames.end(), propertyName) != 
-                usdNames.end()) {
-
-                locators.insert(
-                    UsdImagingUsdRenderVarSchema::GetDefaultLocator()
-                        .Append(propertyName));
+        if (tokensSet.find(propertyName) != tokensSet.end()) {
+            locators.insert(
+                UsdImagingUsdRenderVarSchema::GetDefaultLocator()
+                    .Append(propertyName));
         }
         else {
-                // It is likely that the property is an attribute that's
-                // aggregated under "namespaced settings". For performance, skip
-                // validating whether that is the case.
-                locators.insert(
-                    UsdImagingUsdRenderVarSchema::GetNamespacedSettingsLocator());
+            // It is likely that the property is an attribute that's
+            // aggregated under "namespaced settings". For performance, skip
+            // validating whether that is the case.
+            locators.insert(
+                UsdImagingUsdRenderVarSchema::GetNamespacedSettingsLocator());
         }
     }
     // Note: Skip UsdImagingDataSourcePrim::Invalidate(...)

@@ -1,25 +1,8 @@
 //
 // Copyright 2016-2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 /// \file alembicWriter.cpp
 
@@ -47,7 +30,6 @@
 #include <Alembic/AbcGeom/OXform.h>
 #include <Alembic/AbcGeom/Visibility.h>
 #include <Alembic/AbcCoreOgawa/All.h>
-#include <boost/functional/hash.hpp>
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -683,7 +665,7 @@ public:
     }
 
     /// Returns the Usd data.
-    const SdfAbstractData& GetData() const { return *boost::get_pointer(_data);}
+    const SdfAbstractData& GetData() const { return *get_pointer(_data);}
 
     /// Sets or resets the flag named \p flagName.
     void SetFlag(const TfToken& flagName, bool set);
@@ -1492,9 +1474,8 @@ _Copy(
     DST* dst,
     R (DST::*method)(T))
 {
-    typedef typename boost::remove_const<
-                typename boost::remove_reference<T>::type
-            >::type SampleValueType;
+    typedef std::remove_const_t<
+                std::remove_reference_t<T>> SampleValueType;
 
     const SdfValueTypeName& usdType = samples.GetTypeName();
     const _WriterSchema::Converter& converter = schema.GetConverter(usdType);
@@ -1522,9 +1503,8 @@ _Copy(
     DST* dst,
     R (DST::*method)(T))
 {
-    typedef typename boost::remove_const<
-                typename boost::remove_reference<T>::type
-            >::type SampleValueType;
+    typedef std::remove_const_t<
+                std::remove_reference_t<T>> SampleValueType;
 
     const SdfValueTypeName& usdType = samples.GetTypeName();
 

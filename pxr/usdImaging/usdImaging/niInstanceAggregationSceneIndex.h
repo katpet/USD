@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_NI_INSTANCE_AGGREGATION_SCENE_INDEX_H
 #define PXR_USD_IMAGING_NI_INSTANCE_AGGREGATION_SCENE_INDEX_H
@@ -52,8 +35,8 @@ TF_DECLARE_REF_PTRS(UsdImaging_NiInstanceAggregationSceneIndex);
 /// scene delegates. In other words, we can only aggregate instances
 /// that are instanced by the same point instancer. If not instanced by
 /// a point instancer, the enclosing prototype root is simply /.
-/// 2. Same bindings. For now, we only look at the material bindings of
-/// an instance.
+/// 2. Same bindings. That is, data source on native instances identified
+/// by instanceDataSurceNames.
 /// 3. The same prototype (path from the data source at usdPrototypePath).
 ///
 /// The corresponding instancer will be inserted under the enclosing
@@ -142,7 +125,7 @@ TF_DECLARE_REF_PTRS(UsdImaging_NiInstanceAggregationSceneIndex);
 ///             prototypes: [ /UsdNiPropagatedPrototypes/NoBindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype ]
 ///             instanceLocations: [ /Cube_1 ] # for picking
 ///         primvars:
-///             instanceTransform:
+///             hydra:instanceTransforms:
 ///                 primvarValue: [ identity matrix ]
 ///                 interpolation: instance
 ///
@@ -186,7 +169,7 @@ TF_DECLARE_REF_PTRS(UsdImaging_NiInstanceAggregationSceneIndex);
 ///             prototypes: [ /UsdNiPropagatedPrototypes/Binding312...436/__Prototype_1/UsdNiInstancer/UsdNiPrototype ]
 ///             instanceLocations: [ /Cube_1 ] # for picking
 ///         primvars:
-///             instanceTransform:
+///             hydra:instanceTransforms:
 ///                 primvarValue: [ identity matrix ]
 ///                 interpolation: instance
 ///
@@ -237,7 +220,7 @@ TF_DECLARE_REF_PTRS(UsdImaging_NiInstanceAggregationSceneIndex);
 ///             prototypes: [ /MyPointInstancer/MyPointPrototype/ForInstancer434...256/UsdNiPropagatedPrototypes/NoBindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype ]
 ///             instanceLocations: [ /Cube_1 ] # for picking
 ///         primvars:
-///             instanceTransform:
+///             hydra:instanceTransforms:
 ///                 primvarValue: [ identity matrix ]
 ///                 interpolation: instance
 ///
@@ -245,18 +228,25 @@ class UsdImaging_NiInstanceAggregationSceneIndex final
                 : public HdFilteringSceneIndexBase
 {
 public:
-    // forPrototype = false indicates that this scene index is instantiated
-    // for the USD stage with all USD prototypes filtered out.
-    // forPrototype = true indicates that it is instantiated for a USD
+    // forNativePrototype = false indicates that this scene index is
+    // instantiated for the USD stage with all USD prototypes filtered out.
+    // forNativePrototype = true indicates that it is instantiated for a USD
     // prototype and the instancers it adds for the instancers within this
     // prototype need to have the instancedBy data source populated in turn.
+    //
+    // instanceDataSourceNames are the names of the data sources of a native
+    // instance prim that need to have the same values for the instances to
+    // be aggregated. A copy of these data sources is bundled into the
+    // prim data source for the binding scope.
+    // 
     static UsdImaging_NiInstanceAggregationSceneIndexRefPtr New(
             HdSceneIndexBaseRefPtr const &inputScene,
-            const bool forPrototype)
+            const bool forNativePrototype,
+            const TfTokenVector &instanceDataSourceNames)
     {
         return TfCreateRefPtr(
             new UsdImaging_NiInstanceAggregationSceneIndex(
-                inputScene, forPrototype));
+                inputScene, forNativePrototype, instanceDataSourceNames));
     }
 
     ~UsdImaging_NiInstanceAggregationSceneIndex() override;
@@ -267,11 +257,20 @@ public:
 
     std::vector<HdSceneIndexBaseRefPtr> GetInputScenes() const override;
 
-    // Given a path in this scene index, returns the name of the prototype
-    // if it is a path to an instancer instancing a particular prototype.
-    // If not the path to such an instancer, return empty token.
+    // If the given path is for an instancer in this scene index, returns the
+    // name of the prototype that this instancer is meant to instance.
+    // Otherwise, return empty token.
     static
     TfToken GetPrototypeNameFromInstancerPath(const SdfPath &primPath);
+
+    // If the given path is for an instancer in this scene index, returns
+    // the path of the scope containing the bindings that need to be
+    // applied to the prototype. Otherwise, return empty token.
+    //
+    // That is the data source of that scope needs to be used when resolving
+    // the opinions on the prototype that this instancer is meant to instance.
+    static
+    SdfPath GetBindingScopeFromInstancerPath(const SdfPath &primPath);
 
 private:
     friend class _RetainedSceneIndexObserver;
@@ -300,7 +299,10 @@ private:
 
     UsdImaging_NiInstanceAggregationSceneIndex(
         HdSceneIndexBaseRefPtr const &inputScene,
-        bool forPrototype);
+        bool forNativePrototype,
+        const TfTokenVector &instanceDataSourceNames);
+
+    const TfTokenVector _instanceDataSourceNames;
 
     std::unique_ptr<
         UsdImaging_NiInstanceAggregationSceneIndex_Impl::

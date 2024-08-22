@@ -2,25 +2,8 @@
 #
 # Copyright 2018 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 from __future__ import print_function
 from pxr import Ar, Tf, Sdf, Usd, UsdMtlx, UsdShade
@@ -247,6 +230,27 @@ class TestFileFormat(unittest.TestCase):
         self.assertTrue(Sdf.FileFormat.FormatSupportsReading('.mtlx'))
         self.assertFalse(Sdf.FileFormat.FormatSupportsWriting('.mtlx'))
         self.assertFalse(Sdf.FileFormat.FormatSupportsEditing('.mtlx'))
+
+    def test_ExpandFilePrefix(self):
+        """
+        Test active file prefix defined by the fileprefix attribute
+        in a parent tag.
+        """
+        stage = UsdMtlx._TestFile('ExpandFilePrefix.mtlx')
+
+        for nodeName, expectedResult in [
+            ('image_base', 'outer_scope/textures/base.tif'),
+            ('image_spec', 'inner_scope/textures/spec.tif')
+        ]:
+            primPath = f'/MaterialX/Materials/test_material/test_nodegraph/{nodeName}'
+            shader = UsdShade.Shader.Get(stage, primPath)
+            self.assertTrue(shader)
+
+            fileInput = shader.GetInput('file')
+            self.assertTrue(fileInput)
+
+            actualResult = fileInput.Get().path
+            self.assertEqual(actualResult, expectedResult)
 
 if __name__ == '__main__':
     unittest.main()

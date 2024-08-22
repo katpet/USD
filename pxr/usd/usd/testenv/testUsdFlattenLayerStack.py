@@ -2,25 +2,8 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 from __future__ import print_function
 
@@ -73,7 +56,7 @@ class TestUsdFlattenLayerStack(unittest.TestCase):
             self.assertEqual( a.GetTimeSamples(),  [-9.0, 0.0] )
 
             # Layer offsets get folded into reference arcs
-            p = stage.GetPrimAtPath('/Sphere/ChildFromReference')
+            p = stage.GetPrimAtPath('/Sphere/RootReloChildFromReference')
             a = p.GetAttribute('timeSamplesAcrossRef')
             self.assertEqual( a.GetTimeSamples(),  [-9.0, 0.0] )
 
@@ -88,9 +71,9 @@ class TestUsdFlattenLayerStack(unittest.TestCase):
 
             # Confirm children from across various kinds of arcs.
             for childPath in [
-                '/Sphere/ChildFromPayload',
-                '/Sphere/ChildFromReference',
-                '/Sphere/ChildFromNestedVariant']:
+                '/Sphere/SubReloChildFromPayload',
+                '/Sphere/RootReloChildFromReference',
+                '/Sphere/RootReloChildFromNestedVariant']:
                 self.assertTrue(stage.GetPrimAtPath(childPath))
 
             # Confirm time samples coming from (offset) clips.
@@ -426,6 +409,88 @@ class TestUsdFlattenLayerStack(unittest.TestCase):
         for (tag, extension) in tagToExtension.items():
             layer = Usd.FlattenLayerStack(src_layer_stack, tag=tag)
             self.assertTrue(layer.identifier.endswith(extension))
+
+    def test_FlattenLayerStackPathsWithMissungUriResolvers(self):
+        """Tests that when flattening, asset paths that contain URI schemes
+        for which there is no registered resolver are left unmodified
+        """
+
+        rootLayer = Sdf.Layer.CreateAnonymous(".usda")
+        rootLayer.ImportFromString("""
+        #usda 1.0
+
+        def "TestPrim"(
+            assetInfo = {
+                asset identifier = @test123://1.2.3.4/file3.txt@
+                asset[] assetRefArr = [@test123://1.2.3.4/file6.txt@]
+            }
+        )
+        {
+            asset uriAssetRef = @test123://1.2.3.4/file1.txt@
+            asset[] uriAssetRefArray = [@test123://1.2.3.4/file2.txt@]
+
+            asset uriAssetRef.timeSamples = {
+                0: @test123://1.2.3.4/file4.txt@,
+                1: @test123://1.2.3.4/file5.txt@,
+            }
+                                   
+            asset[] uriAssetRefArray.timeSamples = {
+                0: [@test123://1.2.3.4/file6.txt@],
+                1: [@test123://1.2.3.4/file7.txt@],               
+            }
+        }
+        """.strip())
+        
+        stage = Usd.Stage.Open(rootLayer)
+        flatStage = Usd.Stage.Open(stage.Flatten())
+
+        propPath = "/TestPrim.uriAssetRef"
+        stageProp = stage.GetPropertyAtPath(propPath)
+        flatStageProp = flatStage.GetPropertyAtPath(propPath)
+        self.assertEqual(stageProp.Get(), flatStageProp.Get())
+        
+        self.assertEqual(stageProp.GetTimeSamples(), 
+                         flatStageProp.GetTimeSamples())
+
+        for timeSample in stageProp.GetTimeSamples():
+            self.assertEqual(stageProp.Get(timeSample), flatStageProp.Get(timeSample))
+
+        arrayPath = "/TestPrim.uriAssetRefArray"
+        self.assertEqual(stage.GetPropertyAtPath(arrayPath).Get(), 
+                         flatStage.GetPropertyAtPath(arrayPath).Get())
+            
+        self.assertEqual(stage.GetPropertyAtPath(arrayPath).GetTimeSamples(), 
+                         flatStage.GetPropertyAtPath(arrayPath).GetTimeSamples())
+        
+        for timeSample in stage.GetPropertyAtPath(arrayPath).GetTimeSamples():
+            self.assertEqual(stage.GetPropertyAtPath(arrayPath).Get(timeSample), 
+                             flatStage.GetPropertyAtPath(arrayPath).Get(timeSample))
+
+        primPath = "/TestPrim"
+        self.assertEqual(
+            stage.GetPrimAtPath(primPath).GetMetadata("assetInfo").get("identifier"), 
+            flatStage.GetPrimAtPath(primPath).GetMetadata("assetInfo").get("identifier"))
+        
+        self.assertEqual(
+            stage.GetPrimAtPath(primPath).GetMetadata("assetInfo").get("assetRefArr"), 
+            flatStage.GetPrimAtPath(primPath).GetMetadata("assetInfo").get("assetRefArr"))
+
+    def test_ListOpAdd(self):
+        src_stage = Usd.Stage.Open('listOp_add.usda')
+        src_layer_stack = src_stage._GetPcpCache().layerStack
+        layer = Usd.FlattenLayerStack(src_layer_stack)
+        
+        # Confirm that "add" targets were converted to "append"
+        attrSpec = layer.GetObjectAtPath('/B.test')
+        expectedTargets = Sdf.PathListOp()
+        expectedTargets.appendedItems = [Sdf.Path('/A')]
+        self.assertEqual(attrSpec.GetInfo('targetPaths'), expectedTargets)
+        
+        # Confirm that "explicit list" targets were stay explicit
+        attrSpec = layer.GetObjectAtPath('/C.test')
+        expectedTargets = Sdf.PathListOp()
+        expectedTargets.explicitItems = [Sdf.Path('/A')]
+        self.assertEqual(attrSpec.GetInfo('targetPaths'), expectedTargets)
 
 if __name__=="__main__":
     # Register test plugin defining timecode metadata fields.

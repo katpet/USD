@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_TF_REF_PTR_H
 #define PXR_BASE_TF_REF_PTR_H
@@ -475,84 +458,109 @@ inline void Tf_RefPtrTracker_Assign(const void*, const void*, const void*) { }
 // It may lock and invoke the unique changed listener, if the reference count
 // becomes unique or non-unique.
 struct Tf_RefPtr_UniqueChangedCounter {
-    static inline int
-    AddRef(TfRefBase const *refBase)
-    {
-        if (refBase) {
-            // Check to see if we need to invoke the unique changed listener.
-            if (refBase->_shouldInvokeUniqueChangedListener)
-                return _AddRef(refBase);
-            else
-                return refBase->GetRefCount()._FetchAndAdd(1);
+    static inline void
+    AddRef(TfRefBase const *refBase) {
+        if (ARCH_UNLIKELY(!refBase)) {
+            return;
         }
-        return 0;
+        const auto relaxed = std::memory_order_relaxed;
+        // Read the current count value.
+        std::atomic_int &counter = refBase->_GetRefCount();
+        int prevCount = counter.load(relaxed);
+        if (ARCH_UNLIKELY(prevCount < 0)) {
+            // We need to invoke the unique changed listener if count goes from
+            // -1 -> -2.  Try to CAS the value to one more count if it looks
+            // like we won't take it from -1 -> -2.  If that works, we're done.
+            // If not, we'll call an out-of-line function that handles the
+            // locking part.
+            if (prevCount != -1 && counter.
+                compare_exchange_weak(prevCount, prevCount-1, relaxed)) {
+                return;
+            }
+            _AddRefMaybeLocked(refBase, prevCount);
+        }
+        else {
+            // Just bump the count.
+            counter.fetch_add(1, relaxed);
+        }
     }
 
     static inline bool
     RemoveRef(TfRefBase const* refBase) {
-        if (refBase) {
-            // Check to see if we need to invoke the unique changed listener.
-            return refBase->_shouldInvokeUniqueChangedListener ?
-                        _RemoveRef(refBase) :
-                        refBase->GetRefCount()._DecrementAndTestIfZero();
+        if (ARCH_UNLIKELY(!refBase)) {
+            return false;
         }
-        return false;
+        const auto relaxed = std::memory_order_relaxed;
+        const auto release = std::memory_order_release;
+        // Read the current count value.
+        std::atomic_int &counter = refBase->_GetRefCount();
+        int prevCount = counter.load(relaxed);
+        if (ARCH_UNLIKELY(prevCount < 0)) {
+            // We need to invoke the unique changed listener if count goes from
+            // -2 -> -1.  Try to CAS the value to one less count if it looks
+            // like we won't take it from -2 -> -1.  If that works, we're done.
+            // If not, we'll call an out-of-line function that handles the
+            // locking part.
+            if (prevCount != -2 && counter.
+                compare_exchange_weak(prevCount, prevCount+1, release)) {
+                return prevCount == -1;
+            }
+            return _RemoveRefMaybeLocked(refBase, prevCount);
+        }
+        else {
+            // Just drop the count.
+            return counter.fetch_sub(1, release) == 1;
+        }
     }
 
     // Increment ptr's count if it is not zero.  Return true if done so
     // successfully, false if its count is zero.
-    static inline bool
-    AddRefIfNonzero(TfRefBase const *ptr) {
-        if (!ptr)
-            return false;
-        if (ptr->_shouldInvokeUniqueChangedListener) {
-            return _AddRefIfNonzero(ptr);
-        } else {
-            auto &counter = ptr->GetRefCount()._counter;
-            auto val = counter.load();
-            do {
-                if (val == 0)
-                    return false;
-            } while (!counter.compare_exchange_weak(val, val + 1));
-            return true;
-        }
-    }
+    TF_API static bool
+    AddRefIfNonzero(TfRefBase const *refBase);
     
-    TF_API static bool _RemoveRef(TfRefBase const *refBase);
+    TF_API static void
+    _AddRefMaybeLocked(TfRefBase const *refBase, int prevCount);
 
-    TF_API static int _AddRef(TfRefBase const *refBase);
+    TF_API static bool
+    _RemoveRefMaybeLocked(TfRefBase const *refBase, int prevCount);
 
-    TF_API static bool _AddRefIfNonzero(TfRefBase const *refBase);
 };
 
 // This code is used to increment and decrement ref counts in the case where
 // the object pointed to explicitly does not support unique changed listeners.
 struct Tf_RefPtr_Counter {
-    static inline int
+    static inline void
     AddRef(TfRefBase const *refBase) {
-        if (refBase)
-            return refBase->GetRefCount()._FetchAndAdd(1);
-        return 0;
+        if (ARCH_UNLIKELY(!refBase)) {
+            return;
+        }
+        refBase->_GetRefCount().fetch_add(1, std::memory_order_relaxed);
     }
 
     static inline bool
-    RemoveRef(TfRefBase const *ptr) {
-        return (ptr && (ptr->GetRefCount()._DecrementAndTestIfZero()));
+    RemoveRef(TfRefBase const *refBase) {
+        if (ARCH_UNLIKELY(!refBase)) {
+            return false;
+        }
+        return refBase->_GetRefCount()
+            .fetch_sub(1, std::memory_order_release) == 1;
     }
 
     // Increment ptr's count if it is not zero.  Return true if done so
     // successfully, false if its count is zero.
     static inline bool
-    AddRefIfNonzero(TfRefBase const *ptr) {
-        if (!ptr)
+    AddRefIfNonzero(TfRefBase const *refBase) {
+        if (ARCH_UNLIKELY(!refBase)) {
             return false;
-        auto &counter = ptr->GetRefCount()._counter;
-        auto val = counter.load();
-        do {
-            if (val == 0)
-                return false;
-        } while (!counter.compare_exchange_weak(val, val + 1));
-        return true;
+        }
+        auto &counter = refBase->_GetRefCount();
+        int prevCount = counter.load(std::memory_order_relaxed);
+        while (prevCount) {
+            if (counter.compare_exchange_weak(prevCount, prevCount+1)) {
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -588,7 +596,7 @@ public:
 
     template <class U> struct Rebind {
         typedef TfRefPtr<U> Type;
-    };    
+    };
 
     /// Initialize pointer to nullptr.
     ///
@@ -1252,15 +1260,13 @@ TfConst_cast(const TfRefPtr<const typename T::DataType>& ptr)
 template <>
 class TfRefPtr<TfRefBase> {
 private:
-    TfRefPtr<TfRefBase>() {
-    }
+    TfRefPtr() = delete;
 };
 
 template <>
 class TfRefPtr<const TfRefBase> {
 private:
-    TfRefPtr<const TfRefBase>() {
-    }
+    TfRefPtr() = delete;
 };
 
 template <class T>
@@ -1341,7 +1347,7 @@ TfHashAppend(HashState &h, const TfRefPtr<T> &ptr)
 
 #endif // !doxygen
 
-#define TF_SUPPORTS_REFPTR(T) std::is_base_of<TfRefBase, T>::value
+#define TF_SUPPORTS_REFPTR(T) std::is_base_of_v<TfRefBase, T>
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

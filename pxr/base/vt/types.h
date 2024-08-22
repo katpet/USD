@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_VT_TYPES_H
 #define PXR_BASE_VT_TYPES_H
@@ -33,12 +16,9 @@
 #include "pxr/base/arch/inttypes.h"
 #include "pxr/base/gf/declare.h"
 #include "pxr/base/gf/half.h"
+#include "pxr/base/tf/meta.h"
+#include "pxr/base/tf/preprocessorUtilsLite.h"
 #include "pxr/base/tf/token.h"
-
-#include <boost/preprocessor/cat.hpp>
-#include <boost/preprocessor/seq/for_each.hpp>
-#include <boost/preprocessor/seq/for_each_i.hpp>
-#include <boost/preprocessor/tuple/elem.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -142,9 +122,9 @@ VT_TYPE_IS_CHEAP_TO_COPY(TfToken);
 
 // Helper macros for extracting bits from a type tuple.
 #define VT_TYPE(elem) \
-BOOST_PP_TUPLE_ELEM(2, 0, elem)
+TF_PP_TUPLE_ELEM(0, elem)
 #define VT_TYPE_NAME(elem) \
-BOOST_PP_TUPLE_ELEM(2, 1, elem)   
+TF_PP_TUPLE_ELEM(1, elem)
 
 
 // Composite groups of types.
@@ -171,18 +151,18 @@ VT_SCALAR_CLASS_VALUE_TYPES VT_BUILTIN_VALUE_TYPES
 // typedef VtArray<int> VtIntArray;
 // typedef VtArray<double> VtDoubleArray;
 template<typename T> class VtArray;
-#define VT_ARRAY_TYPEDEF(r, unused, elem) \
+#define VT_ARRAY_TYPEDEF(unused, elem) \
 typedef VtArray< VT_TYPE(elem) > \
-BOOST_PP_CAT(Vt, BOOST_PP_CAT(VT_TYPE_NAME(elem), Array)) ;
-BOOST_PP_SEQ_FOR_EACH(VT_ARRAY_TYPEDEF, ~, VT_SCALAR_VALUE_TYPES)
+TF_PP_CAT(Vt, TF_PP_CAT(VT_TYPE_NAME(elem), Array)) ;
+TF_PP_SEQ_FOR_EACH(VT_ARRAY_TYPEDEF, ~, VT_SCALAR_VALUE_TYPES)
 
 // The following preprocessor code generates the boost pp sequence for
 // all array value types (VT_ARRAY_VALUE_TYPES)
-#define VT_ARRAY_TYPE_TUPLE(r, unused, elem) \
-(( BOOST_PP_CAT(Vt, BOOST_PP_CAT(VT_TYPE_NAME(elem), Array)) , \
-   BOOST_PP_CAT(VT_TYPE_NAME(elem), Array) ))
+#define VT_ARRAY_TYPE_TUPLE(unused, elem) \
+(( TF_PP_CAT(Vt, TF_PP_CAT(VT_TYPE_NAME(elem), Array)) , \
+   TF_PP_CAT(VT_TYPE_NAME(elem), Array) ))
 #define VT_ARRAY_VALUE_TYPES \
-BOOST_PP_SEQ_FOR_EACH(VT_ARRAY_TYPE_TUPLE, ~, VT_SCALAR_VALUE_TYPES)
+TF_PP_SEQ_FOR_EACH(VT_ARRAY_TYPE_TUPLE, ~, VT_SCALAR_VALUE_TYPES)
 
 #define VT_CLASS_VALUE_TYPES \
 VT_ARRAY_VALUE_TYPES VT_SCALAR_CLASS_VALUE_TYPES VT_NONARRAY_VALUE_TYPES
@@ -190,33 +170,54 @@ VT_ARRAY_VALUE_TYPES VT_SCALAR_CLASS_VALUE_TYPES VT_NONARRAY_VALUE_TYPES
 #define VT_VALUE_TYPES \
     VT_BUILTIN_VALUE_TYPES VT_CLASS_VALUE_TYPES
 
+#define _VT_MAP_TYPE_LIST(unused, elem) , VT_TYPE(elem)
+
+// Populate a type list from the preprocessor sequence.
+// void is prepended to match the comma for the first type
+// and then dropped by TfMetaTail.
+using Vt_ValueTypeList =
+    TfMetaApply<TfMetaTail, TfMetaList<
+        void TF_PP_SEQ_FOR_EACH(_VT_MAP_TYPE_LIST, ~, VT_VALUE_TYPES)>>;
+
 namespace Vt_KnownValueTypeDetail
 {
 
 // Implement compile-time value type indexes.
-//
 // Base case -- unknown types get index -1.
-template <class T>
+template <typename T>
 constexpr int
-GetIndex() {
+GetIndexImpl(TfMetaList<>) {
     return -1;
 }
 
-// Set indexes for known types.
-#define VT_SET_VALUE_TYPE_INDEX(r, unused, i, elem)                       \
-    template <> constexpr int                                             \
-    GetIndex< VT_TYPE(elem) >() {                                         \
-        return i;                                                         \
+template <typename T, typename Typelist>
+constexpr int
+GetIndexImpl(Typelist) {
+    if (std::is_same_v<T, TfMetaApply<TfMetaHead, Typelist>>) {
+        return 0;
     }
-BOOST_PP_SEQ_FOR_EACH_I(VT_SET_VALUE_TYPE_INDEX, ~, VT_VALUE_TYPES)
-#undef VT_SET_VALUE_TYPE_INDEX
+    else if (const int indexOfTail =
+             GetIndexImpl<T>(TfMetaApply<TfMetaTail, Typelist>{});
+             indexOfTail >= 0) {
+        return 1 + indexOfTail;
+    }
+    else {
+        return -1;
+    }
+}
+
+template <typename T>
+constexpr int
+GetIndex() {
+    return GetIndexImpl<T>(Vt_ValueTypeList{});
+}
 
 } // Vt_KnownValueTypeDetail
 
 // Total number of 'known' value types.
 constexpr int
 VtGetNumKnownValueTypes() {
-    return BOOST_PP_SEQ_SIZE(VT_VALUE_TYPES);
+    return TfMetaApply<TfMetaLength, Vt_ValueTypeList>::value;
 }
 
 /// Provide compile-time value type indexes for types that are "known" to Vt --
@@ -260,14 +261,14 @@ struct VtIsKnownValueType_Workaround
 // None of the VT_VALUE_TYPES are value proxies.  We want to specialize these
 // templates here, since otherwise the VtIsTypedValueProxy will require a
 // complete type to check if it derives VtTypedValueProxyBase.
-#define VT_SPECIALIZE_IS_VALUE_PROXY(r, unused, elem)                          \
+#define VT_SPECIALIZE_IS_VALUE_PROXY(unused, elem)                             \
     template <> struct                                                         \
     VtIsValueProxy< VT_TYPE(elem) > : std::false_type {};                      \
     template <> struct                                                         \
     VtIsTypedValueProxy< VT_TYPE(elem) > : std::false_type {};                 \
     template <> struct                                                         \
     VtIsErasedValueProxy< VT_TYPE(elem) > : std::false_type {};
-BOOST_PP_SEQ_FOR_EACH(VT_SPECIALIZE_IS_VALUE_PROXY, ~, VT_VALUE_TYPES)
+TF_PP_SEQ_FOR_EACH(VT_SPECIALIZE_IS_VALUE_PROXY, ~, VT_VALUE_TYPES)
 #undef VT_SPECIALIZE_IS_VALUE_PROXY
 
 // Free functions to represent "zero" for various base types.  See

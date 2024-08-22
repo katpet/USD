@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/niPrototypePruningSceneIndex.h"
 
@@ -49,12 +32,21 @@ _IsUsdPrototype(HdSceneIndexBaseRefPtr const &sceneIndex,
 bool
 _ContainsPrefixOfPath(const SdfPathSet &pathSet, const SdfPath &path)
 {
-    const auto it = std::lower_bound(
-        pathSet.crbegin(), pathSet.crend(),
-        path,
-        [](const SdfPath &a, const SdfPath &b) {
-            return a > b;});
-    return it != pathSet.crend() && path.HasPrefix(*it);
+     // Use std::map::lower_bound over std::lower_bound since the latter
+    // is slow given that std::map iterators are not random access.
+    auto it = pathSet.lower_bound(path);
+    if (it != pathSet.end() && path == *it) {
+        // Path itself is in the container
+        return true;
+    }
+
+    // If a prefix of path is in container, it will point to the next element
+    // in the container, rather than the prefix itself.
+    if (it == pathSet.begin()) {
+        return false;
+    }
+    --it;
+    return path.HasPrefix(*it);
 }
 
 // Only return entries (e.g., HdSceneIndexObserver::AddedEntries) where

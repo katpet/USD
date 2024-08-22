@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/simpleLightTask.h"
 
@@ -71,7 +54,10 @@ HdxSimpleLightTask::HdxSimpleLightTask(
   , _lightingBar(nullptr)
   , _lightSourcesBar(nullptr)
   , _shadowsBar(nullptr)
-  , _materialBar(nullptr)
+  // Build all buffer sources the first time.
+  , _rebuildLightingBufferSources(true)
+  , _rebuildLightAndShadowBufferSources(true)
+  , _rebuildMaterialBufferSources(true)
 {
 }
 
@@ -134,6 +120,8 @@ HdxSimpleLightTask::Sync(HdSceneDelegate* delegate,
         //      more formal material plumbing.
         _material = params.material;
         _sceneAmbient = params.sceneAmbient;
+
+        _rebuildMaterialBufferSources = true;
     }
 
     static const TfTokenVector lightTypes = 
@@ -328,7 +316,16 @@ HdxSimpleLightTask::Sync(HdSceneDelegate* delegate,
 
     TF_VERIFY(_glfSimpleLights.size() <= _maxLights);
 
-    lightingContext->SetUseLighting(!_glfSimpleLights.empty());
+    const bool useLighting = !_glfSimpleLights.empty();
+    if (useLighting != lightingContext->GetUseLighting()) {
+        _rebuildLightingBufferSources = true;
+    }
+
+    if (_glfSimpleLights != lightingContext->GetLights()) {
+        _rebuildLightAndShadowBufferSources = true;
+    }
+
+    lightingContext->SetUseLighting(useLighting);
     lightingContext->SetLights(_glfSimpleLights);
     lightingContext->SetCamera(viewMatrix, projectionMatrix);
     // XXX: compatibility hack for passing some unit tests until we have
@@ -379,6 +376,8 @@ void
 HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
                             HdRenderIndex* renderIndex)
 {
+    HD_TRACE_FUNCTION();
+
     GlfSimpleLightingContextRefPtr const& lightingContext = 
         _lightingShader->GetLightingContext(); 
     if (!TF_VERIFY(lightingContext)) {
@@ -408,7 +407,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
         _lightingBar = hdStResourceRegistry->AllocateUniformBufferArrayRange(
             HdxSimpleLightTaskTokens->lighting, 
             bufferSpecs, 
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsUniform);
 
         _lightingShader->AddBufferBinding(
             HdStBindingRequest(HdStBinding::UBO, 
@@ -417,7 +416,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
     }
   
     // Add lighting buffer sources
-    {
+    if (_rebuildLightingBufferSources) {
         HdBufferSourceSharedPtrVector sources = {
             std::make_shared<HdVtBufferSource>(
                 HdxSimpleLightTaskTokens->useLighting,
@@ -483,7 +482,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
         _lightSourcesBar = hdStResourceRegistry->AllocateUniformBufferArrayRange(
             HdxSimpleLightTaskTokens->lighting,
             bufferSpecs,
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsUniform);
     }
 
     _lightingShader->RemoveBufferBinding(HdxSimpleLightTaskTokens->lightSource);
@@ -518,7 +517,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
         _shadowsBar = 
             hdStResourceRegistry->AllocateUniformBufferArrayRange(
                 HdxSimpleLightTaskTokens->lighting, bufferSpecs, 
-                HdBufferArrayUsageHint());
+                HdBufferArrayUsageHintBitsUniform);
     }
     
     _lightingShader->RemoveBufferBinding(HdxSimpleLightTaskTokens->shadow);
@@ -532,7 +531,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
     }
 
     // Add light and shadow buffer sources
-    {
+    if (_rebuildLightAndShadowBufferSources) {
         // Light sources
         VtVec4fArray position(numLights);
         VtVec4fArray ambient(numLights);
@@ -680,7 +679,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
         _materialBar = hdStResourceRegistry->AllocateUniformBufferArrayRange(
             HdxSimpleLightTaskTokens->lighting, 
             bufferSpecs, 
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsUniform);
 
         // Add buffer binding request
         _lightingShader->AddBufferBinding(
@@ -691,7 +690,7 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
     }
     
     // Add material buffer sources
-    {
+    if (_rebuildMaterialBufferSources) {
         GlfSimpleMaterial const & material = lightingContext->GetMaterial();
 
         HdBufferSourceSharedPtrVector sources = {
@@ -717,6 +716,10 @@ HdxSimpleLightTask::Prepare(HdTaskContext* ctx,
 
         hdStResourceRegistry->AddSources(_materialBar, std::move(sources));
     }
+
+    _rebuildLightingBufferSources = false;
+    _rebuildLightAndShadowBufferSources = false;
+    _rebuildMaterialBufferSources = false;
 }
 
 void

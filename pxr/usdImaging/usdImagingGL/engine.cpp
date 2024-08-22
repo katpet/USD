@@ -1,53 +1,30 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/usdImaging/usdImagingGL/engine.h"
 
 #include "pxr/usdImaging/usdImaging/delegate.h"
-#include "pxr/usdImaging/usdImaging/drawModeSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/extentResolvingSceneIndex.h"
 #include "pxr/usdImaging/usdImaging/selectionSceneIndex.h"
 #include "pxr/usdImaging/usdImaging/stageSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/niPrototypePropagatingSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/piPrototypePropagatingSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/unloadedDrawModeSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/renderSettingsFlatteningSceneIndex.h"
 #include "pxr/usdImaging/usdImaging/rootOverridesSceneIndex.h"
-#include "pxr/usdImaging/usdImaging/flattenedDataSourceProviders.h"
+#include "pxr/usdImaging/usdImaging/sceneIndices.h"
 
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/camera.h"
 #include "pxr/usd/usdRender/tokens.h"
 #include "pxr/usd/usdRender/settings.h"
 
-#include "pxr/imaging/hd/flatteningSceneIndex.h"
 #include "pxr/imaging/hd/materialBindingsSchema.h"
 #include "pxr/imaging/hd/light.h"
 #include "pxr/imaging/hd/rendererPlugin.h"
 #include "pxr/imaging/hd/rendererPluginRegistry.h"
 #include "pxr/imaging/hd/retainedDataSource.h"
 #include "pxr/imaging/hd/sceneIndexPluginRegistry.h"
+#include "pxr/imaging/hd/systemMessages.h"
 #include "pxr/imaging/hd/utils.h"
 #include "pxr/imaging/hdsi/primTypePruningSceneIndex.h"
 #include "pxr/imaging/hdsi/legacyDisplayStyleOverrideSceneIndex.h"
@@ -155,7 +132,8 @@ UsdImagingGLEngine::UsdImagingGLEngine(
       params.driver,
       params.rendererPluginId,
       params.gpuEnabled,
-      params.displayUnloadedPrimsWithBounds)
+      params.displayUnloadedPrimsWithBounds,
+      params.allowAsynchronousSceneProcessing)
 {
 }
 
@@ -181,7 +159,8 @@ UsdImagingGLEngine::UsdImagingGLEngine(
     const HdDriver& driver,
     const TfToken& rendererPluginId,
     const bool gpuEnabled,
-    const bool displayUnloadedPrimsWithBounds)
+    const bool displayUnloadedPrimsWithBounds,
+    const bool allowAsynchronousSceneProcessing)
     : _hgi()
     , _hgiDriver(driver)
     , _displayUnloadedPrimsWithBounds(displayUnloadedPrimsWithBounds)
@@ -194,6 +173,7 @@ UsdImagingGLEngine::UsdImagingGLEngine(
     , _excludedPrimPaths(excludedPaths)
     , _invisedPrimPaths(invisedPaths)
     , _isPopulated(false)
+    , _allowAsynchronousSceneProcessing(allowAsynchronousSceneProcessing)
 {
     if (!_gpuEnabled && _hgiDriver.name == HgiTokens->renderDriver &&
         _hgiDriver.driver.IsHolding<Hgi*>()) {
@@ -304,6 +284,7 @@ UsdImagingGLEngine::PrepareBatch(
             _sceneDelegate->SetTime(params.frame);
         }
 
+        _SetSceneGlobalsCurrentFrame(params.frame);
         _PostSetTime(params);
     }
 }
@@ -369,6 +350,10 @@ UsdImagingGLEngine::_SetActiveRenderSettingsPrimFromStageMetadata(
 void
 UsdImagingGLEngine::_UpdateDomeLightCameraVisibility()
 {
+    if (!_renderIndex->IsSprimTypeSupported(HdPrimTypeTokens->domeLight)) {
+        return;
+    }
+
     // Check to see if the dome light camera visibility has changed, and mark
     // the dome light prim as dirty if it has.
     //
@@ -548,7 +533,7 @@ UsdImagingGLEngine::SetFraming(CameraUtilFraming const& framing)
 
 void
 UsdImagingGLEngine::SetOverrideWindowPolicy(
-    const std::pair<bool, CameraUtilConformWindowPolicy> &policy)
+    const std::optional<CameraUtilConformWindowPolicy> &policy)
 {
     if (ARCH_UNLIKELY(!_renderDelegate)) {
         return;
@@ -766,6 +751,49 @@ UsdImagingGLEngine::TestIntersection(
     int *outHitInstanceIndex,
     HdInstancerContext *outInstancerContext)
 {
+    PickParams pickParams = { HdxPickTokens->resolveNearestToCenter };
+    IntersectionResultVector results;
+
+    if (TestIntersection(pickParams, viewMatrix, projectionMatrix,
+            root, params, &results)) {
+        if (results.size() != 1) {
+            // Since we are in nearest-hit mode, we expect allHits to have a
+            // single point in it.
+            return false;
+        }
+        IntersectionResult &result = results.front();
+        if (outHitPoint) {
+            *outHitPoint = result.hitPoint;
+        }
+        if (outHitNormal) {
+            *outHitNormal = result.hitNormal;
+        }
+        if (outHitPrimPath) {
+            *outHitPrimPath = result.hitPrimPath;
+        }
+        if (outHitInstancerPath) {
+            *outHitInstancerPath = result.hitInstancerPath;
+        }
+        if (outHitInstanceIndex) {
+            *outHitInstanceIndex = result.hitInstanceIndex;
+        }
+        if (outInstancerContext) {
+            *outInstancerContext = result.instancerContext;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool
+UsdImagingGLEngine::TestIntersection(
+    const PickParams& pickParams,
+    const GfMatrix4d& viewMatrix,
+    const GfMatrix4d& projectionMatrix,
+    const UsdPrim& root,
+    const UsdImagingGLRenderParams& params,
+    IntersectionResultVector* outResults)
+{
     if (ARCH_UNLIKELY(!_renderDelegate)) {
         return false;
     }
@@ -784,56 +812,48 @@ UsdImagingGLEngine::TestIntersection(
     _PrepareRender(params);
 
     HdxPickHitVector allHits;
-    HdxPickTaskContextParams pickParams;
-    pickParams.resolveMode = HdxPickTokens->resolveNearestToCenter;
-    pickParams.viewMatrix = viewMatrix;
-    pickParams.projectionMatrix = projectionMatrix;
-    pickParams.clipPlanes = params.clipPlanes;
-    pickParams.collection = _intersectCollection;
-    pickParams.outHits = &allHits;
-    const VtValue vtPickParams(pickParams);
+    HdxPickTaskContextParams pickCtxParams;
+    pickCtxParams.resolveMode = pickParams.resolveMode;
+    pickCtxParams.viewMatrix = viewMatrix;
+    pickCtxParams.projectionMatrix = projectionMatrix;
+    pickCtxParams.clipPlanes = params.clipPlanes;
+    pickCtxParams.collection = _intersectCollection;
+    pickCtxParams.outHits = &allHits;
+    const VtValue vtPickCtxParams(pickCtxParams);
 
-    _engine->SetTaskContextData(HdxPickTokens->pickParams, vtPickParams);
+    _engine->SetTaskContextData(HdxPickTokens->pickParams, vtPickCtxParams);
     _Execute(params, _taskController->GetPickingTasks());
 
-    // Since we are in nearest-hit mode, we expect allHits to have
-    // a single point in it.
-    if (allHits.size() != 1) {
+    // return false if there were no hits
+    if (allHits.size() == 0) {
         return false;
     }
 
-    HdxPickHit &hit = allHits[0];
+    for(HdxPickHit& hit : allHits)
+    {
+        IntersectionResult res;
 
-    if (outHitPoint) {
-        *outHitPoint = hit.worldSpaceHitPoint;
-    }
-
-    if (outHitNormal) {
-        *outHitNormal = hit.worldSpaceHitNormal;
-    }
-
-    if (_sceneDelegate) {
-        hit.objectId = _sceneDelegate->GetScenePrimPath(
-            hit.objectId, hit.instanceIndex, outInstancerContext);
-        hit.instancerId = _sceneDelegate->ConvertIndexPathToCachePath(
-            hit.instancerId).GetAbsoluteRootOrPrimPath();
-    } else {
-        const HdxPrimOriginInfo info = HdxPrimOriginInfo::FromPickHit(
-            _renderIndex.get(), hit);
-        const SdfPath usdPath = info.GetFullPath();
-        if (!usdPath.IsEmpty()) {
-            hit.objectId = usdPath;
+        if (_sceneDelegate) {
+            res.hitPrimPath = _sceneDelegate->GetScenePrimPath(
+                    hit.objectId, hit.instanceIndex, &(res.instancerContext));
+            res.hitInstancerPath = _sceneDelegate->ConvertIndexPathToCachePath(
+                    hit.instancerId).GetAbsoluteRootOrPrimPath();
+        } else {
+            const HdxPrimOriginInfo info = HdxPrimOriginInfo::FromPickHit(
+                _renderIndex.get(), hit);
+            res.hitPrimPath = info.GetFullPath();
+            res.hitInstancerPath = hit.instancerId.ReplacePrefix(
+                _sceneDelegateId, SdfPath::AbsoluteRootPath());
+            res.instancerContext = info.ComputeInstancerContext();
         }
-    }
 
-    if (outHitPrimPath) {
-        *outHitPrimPath = hit.objectId;
-    }
-    if (outHitInstancerPath) {
-        *outHitInstancerPath = hit.instancerId;
-    }
-    if (outHitInstanceIndex) {
-        *outHitInstanceIndex = hit.instanceIndex;
+        res.hitPoint = hit.worldSpaceHitPoint;
+        res.hitNormal = hit.worldSpaceHitNormal;
+        res.hitInstanceIndex = hit.instanceIndex;
+
+        if (outResults) {
+            outResults->push_back(res);
+        }
     }
 
     return true;
@@ -852,30 +872,39 @@ UsdImagingGLEngine::DecodeIntersection(
         return false;
     }
 
-    if (_GetUseSceneIndices()) {
-        // XXX(HYD-2299): picking
-        return false;
-    }
-
-    TF_VERIFY(_sceneDelegate);
-
     const int primId = HdxPickTask::DecodeIDRenderColor(primIdColor);
     const int instanceIdx = HdxPickTask::DecodeIDRenderColor(instanceIdColor);
-    SdfPath primPath =
-        _sceneDelegate->GetRenderIndex().GetRprimPathFromPrimId(primId);
 
+    SdfPath primPath = _renderIndex->GetRprimPathFromPrimId(primId);
     if (primPath.IsEmpty()) {
         return false;
     }
 
     SdfPath delegateId, instancerId;
-    _sceneDelegate->GetRenderIndex().GetSceneDelegateAndInstancerIds(
+    _renderIndex->GetSceneDelegateAndInstancerIds(
         primPath, &delegateId, &instancerId);
 
-    primPath = _sceneDelegate->GetScenePrimPath(
-        primPath, instanceIdx, outInstancerContext);
-    instancerId = _sceneDelegate->ConvertIndexPathToCachePath(instancerId)
-                  .GetAbsoluteRootOrPrimPath();
+    if (_sceneDelegate) {
+        primPath = _sceneDelegate->GetScenePrimPath(
+            primPath, instanceIdx, outInstancerContext);
+        instancerId = _sceneDelegate->ConvertIndexPathToCachePath(instancerId)
+            .GetAbsoluteRootOrPrimPath();
+    } else {
+        HdxPickHit hit;
+        hit.delegateId = delegateId;
+        hit.objectId = primPath;
+        hit.instancerId = instancerId;
+        hit.instanceIndex = instanceIdx;
+
+        const HdxPrimOriginInfo info = HdxPrimOriginInfo::FromPickHit(
+            _renderIndex.get(), hit);
+        primPath = info.GetFullPath();
+        instancerId = instancerId.ReplacePrefix(_sceneDelegateId,
+            SdfPath::AbsoluteRootPath());
+        if (outInstancerContext) {
+            *outInstancerContext = info.ComputeInstancerContext();
+        }
+    }
 
     if (outHitPrimPath) {
         *outHitPrimPath = primPath;
@@ -1006,7 +1035,10 @@ UsdImagingGLEngine::_SetRenderDelegateAndRestoreState(
     bool rootVisibility = true;
 
     if (_GetUseSceneIndices()) {
-        // XXX(USD-7115): root transform, visibility...
+        if (_rootOverridesSceneIndex) {
+            rootTransform = _rootOverridesSceneIndex->GetRootTransform();
+            rootVisibility = _rootOverridesSceneIndex->GetRootVisibility();
+        }
     } else {
         if (_sceneDelegate) {
             rootTransform = _sceneDelegate->GetRootTransform();
@@ -1021,10 +1053,11 @@ UsdImagingGLEngine::_SetRenderDelegateAndRestoreState(
 
     // Reload saved state.
     if (_GetUseSceneIndices()) {
-        // XXX(USD-7115): root transform, visibility...
+        _rootOverridesSceneIndex->SetRootTransform(rootTransform);
+        _rootOverridesSceneIndex->SetRootVisibility(rootVisibility);
     } else {
-        _sceneDelegate->SetRootVisibility(rootVisibility);
         _sceneDelegate->SetRootTransform(rootTransform);
+        _sceneDelegate->SetRootVisibility(rootVisibility);
     }
     _selTracker->SetSelection(selection);
     _taskController->SetSelectionColor(_selectionColor);
@@ -1089,6 +1122,46 @@ UsdImagingGLEngine::_AppendSceneGlobalsSceneIndexCallback(
     return inputScene;
 }
 
+HdSceneIndexBaseRefPtr
+UsdImagingGLEngine::_AppendOverridesSceneIndices(
+    HdSceneIndexBaseRefPtr const &inputScene)
+{
+    HdSceneIndexBaseRefPtr sceneIndex = inputScene;
+
+    static HdContainerDataSourceHandle const materialPruningInputArgs =
+        HdRetainedContainerDataSource::New(
+            HdsiPrimTypePruningSceneIndexTokens->primTypes,
+            HdRetainedTypedSampledDataSource<TfTokenVector>::New(
+                { HdPrimTypeTokens->material }),
+            HdsiPrimTypePruningSceneIndexTokens->bindingToken,
+            HdRetainedTypedSampledDataSource<TfToken>::New(
+                HdMaterialBindingsSchema::GetSchemaToken()));
+
+    // Prune scene materials prior to flattening inherited
+    // materials bindings and resolving material bindings
+    sceneIndex = _materialPruningSceneIndex =
+        HdsiPrimTypePruningSceneIndex::New(
+            sceneIndex, materialPruningInputArgs);
+
+    static HdContainerDataSourceHandle const lightPruningInputArgs =
+        HdRetainedContainerDataSource::New(
+            HdsiPrimTypePruningSceneIndexTokens->primTypes,
+            HdRetainedTypedSampledDataSource<TfTokenVector>::New(
+                HdLightPrimTypeTokens()),
+            HdsiPrimTypePruningSceneIndexTokens->doNotPruneNonPrimPaths,
+            HdRetainedTypedSampledDataSource<bool>::New(
+                false));
+
+    sceneIndex = _lightPruningSceneIndex =
+        HdsiPrimTypePruningSceneIndex::New(
+            sceneIndex, lightPruningInputArgs);
+
+    sceneIndex = _rootOverridesSceneIndex =
+        UsdImagingRootOverridesSceneIndex::New(sceneIndex);
+
+    return sceneIndex;
+}
+
 void
 UsdImagingGLEngine::_SetRenderDelegate(
     HdPluginRenderDelegateUniqueHandle &&renderDelegate)
@@ -1134,82 +1207,19 @@ UsdImagingGLEngine::_SetRenderDelegate(
             _renderDelegate.Get(), {&_hgiDriver}, renderInstanceId));
 
     if (_GetUseSceneIndices()) {
-        HdContainerDataSourceHandle const stageInputArgs =
-            HdRetainedContainerDataSource::New(
-                UsdImagingStageSceneIndexTokens->includeUnloadedPrims,
-                HdRetainedTypedSampledDataSource<bool>::New(
-                    _displayUnloadedPrimsWithBounds));
+        UsdImagingCreateSceneIndicesInfo info;
+        info.displayUnloadedPrimsWithBounds = _displayUnloadedPrimsWithBounds;
+        info.overridesSceneIndexCallback =
+            std::bind(
+                &UsdImagingGLEngine::_AppendOverridesSceneIndices,
+                this, std::placeholders::_1);
 
-        // Create the scene index graph.
-        _sceneIndex = _stageSceneIndex =
-            UsdImagingStageSceneIndex::New(stageInputArgs);
-
-        static HdContainerDataSourceHandle const materialPruningInputArgs =
-            HdRetainedContainerDataSource::New(
-                HdsiPrimTypePruningSceneIndexTokens->primTypes,
-                HdRetainedTypedSampledDataSource<TfTokenVector>::New(
-                    { HdPrimTypeTokens->material }),
-                HdsiPrimTypePruningSceneIndexTokens->bindingToken,
-                HdRetainedTypedSampledDataSource<TfToken>::New(
-                    HdMaterialBindingsSchema::GetSchemaToken()));
-
-        // Prune scene materials prior to flattening inherited
-        // materials bindings and resolving material bindings
-        _sceneIndex = _materialPruningSceneIndex =
-            HdsiPrimTypePruningSceneIndex::New(
-                _sceneIndex, materialPruningInputArgs);
-
-        static HdContainerDataSourceHandle const lightPruningInputArgs =
-            HdRetainedContainerDataSource::New(
-                HdsiPrimTypePruningSceneIndexTokens->primTypes,
-                HdRetainedTypedSampledDataSource<TfTokenVector>::New(
-                    HdLightPrimTypeTokens()),
-                HdsiPrimTypePruningSceneIndexTokens->doNotPruneNonPrimPaths,
-                HdRetainedTypedSampledDataSource<bool>::New(
-                    false));
-
-        _sceneIndex = _lightPruningSceneIndex =
-            HdsiPrimTypePruningSceneIndex::New(
-                _sceneIndex, lightPruningInputArgs);
-
-        // Use extentsHint for default_/geometry purpose
-        HdContainerDataSourceHandle const extentInputArgs =
-            HdRetainedContainerDataSource::New(
-                UsdGeomTokens->purpose,
-                HdRetainedTypedSampledDataSource<TfToken>::New(
-                    UsdGeomTokens->default_));
-
-        _sceneIndex =
-            UsdImagingExtentResolvingSceneIndex::New(
-                _sceneIndex, extentInputArgs);
-
-        if (_displayUnloadedPrimsWithBounds) {
-            _sceneIndex =
-                UsdImagingUnloadedDrawModeSceneIndex::New(_sceneIndex);
-        }
-
-        _sceneIndex = _rootOverridesSceneIndex =
-            UsdImagingRootOverridesSceneIndex::New(_sceneIndex);
-
-        _sceneIndex =
-            UsdImagingPiPrototypePropagatingSceneIndex::New(_sceneIndex);
+        const UsdImagingSceneIndices sceneIndices =
+            UsdImagingCreateSceneIndices(info);
         
-        _sceneIndex =
-            UsdImagingNiPrototypePropagatingSceneIndex::New(_sceneIndex);
-
-        _sceneIndex = _selectionSceneIndex =
-            UsdImagingSelectionSceneIndex::New(_sceneIndex);
-
-        _sceneIndex =
-            UsdImagingRenderSettingsFlatteningSceneIndex::New(_sceneIndex);
-
-        _sceneIndex =
-            HdFlatteningSceneIndex::New(
-                _sceneIndex, UsdImagingFlattenedDataSourceProviders());
-
-        _sceneIndex =
-            UsdImagingDrawModeSceneIndex::New(_sceneIndex,
-                                              /* inputArgs = */ nullptr);
+        _stageSceneIndex = sceneIndices.stageSceneIndex;
+        _selectionSceneIndex = sceneIndices.selectionSceneIndex;
+        _sceneIndex = sceneIndices.finalSceneIndex;
 
         _sceneIndex = _displayStyleSceneIndex =
             HdsiLegacyDisplayStyleOverrideSceneIndex::New(_sceneIndex);
@@ -1221,6 +1231,12 @@ UsdImagingGLEngine::_SetRenderDelegate(
 
         _sceneDelegate->SetDisplayUnloadedPrimsWithBounds(
             _displayUnloadedPrimsWithBounds);
+    }
+
+    if (_allowAsynchronousSceneProcessing) {
+        if (HdSceneIndexBaseRefPtr si = _renderIndex->GetTerminalSceneIndex()) {
+            si->SystemMessage(HdSystemMessageTokens->asyncAllow, nullptr);
+        }
     }
 
     _taskController = std::make_unique<HdxTaskController>(
@@ -1371,6 +1387,20 @@ UsdImagingGLEngine::SetRendererSetting(TfToken const& id, VtValue const& value)
 }
 
 void
+UsdImagingGLEngine::SetActiveRenderPassPrimPath(SdfPath const &path)
+{
+    if (ARCH_UNLIKELY(!_appSceneIndices)) {
+        return;
+    }
+    auto &sgsi = _appSceneIndices->sceneGlobalsSceneIndex;
+    if (ARCH_UNLIKELY(!sgsi)) {
+        return;
+    }
+
+    sgsi->SetActiveRenderPassPrimPath(path);
+}
+
+void
 UsdImagingGLEngine::SetActiveRenderSettingsPrimPath(SdfPath const &path)
 {
     if (ARCH_UNLIKELY(!_appSceneIndices)) {
@@ -1382,6 +1412,19 @@ UsdImagingGLEngine::SetActiveRenderSettingsPrimPath(SdfPath const &path)
     }
 
     sgsi->SetActiveRenderSettingsPrimPath(path);
+}
+
+void UsdImagingGLEngine::_SetSceneGlobalsCurrentFrame(UsdTimeCode const &time)
+{
+    if (ARCH_UNLIKELY(!_appSceneIndices)) {
+        return;
+    }
+    auto &sgsi = _appSceneIndices->sceneGlobalsSceneIndex;
+    if (ARCH_UNLIKELY(!sgsi)) {
+        return;
+    }
+
+    sgsi->SetCurrentFrame(time.GetValue());
 }
 
 /* static */
@@ -1887,6 +1930,60 @@ HdxTaskController *
 UsdImagingGLEngine::_GetTaskController() const
 {
     return _taskController.get();
+}
+
+bool
+UsdImagingGLEngine::PollForAsynchronousUpdates() const
+{
+    class _Observer : public HdSceneIndexObserver
+    {
+    public:
+
+        void PrimsAdded(
+                const HdSceneIndexBase &sender,
+                const AddedPrimEntries &entries) override
+        {
+
+            _changed = true;
+        }
+
+        void PrimsRemoved(
+            const HdSceneIndexBase &sender,
+            const RemovedPrimEntries &entries) override
+        {
+            _changed = true;
+        }
+
+        void PrimsDirtied(
+            const HdSceneIndexBase &sender,
+            const DirtiedPrimEntries &entries) override
+        {
+            _changed = true;
+        }
+
+        void PrimsRenamed(
+            const HdSceneIndexBase &sender,
+            const RenamedPrimEntries &entries) override
+        {
+            _changed = true;
+        }
+
+        bool IsChanged() { return _changed; }
+    private:
+        bool _changed = false;
+    };
+
+    if (_allowAsynchronousSceneProcessing && _renderIndex) {
+        if (HdSceneIndexBaseRefPtr si = _renderIndex->GetTerminalSceneIndex()) {
+            _Observer ob;
+            si->AddObserver(HdSceneIndexObserverPtr(&ob));
+            si->SystemMessage(HdSystemMessageTokens->asyncPoll, nullptr);
+            si->RemoveObserver(HdSceneIndexObserverPtr(&ob));
+            return ob.IsChanged();
+        }
+    }
+
+    return false;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

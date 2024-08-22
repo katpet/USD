@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/niPrototypeSceneIndex.h"
 
@@ -65,25 +48,28 @@ _ResetXformToIdentityDataSource()
             .Build();
 }
 
-HdContainerDataSourceHandle
+const HdContainerDataSourceHandle &
 _UnderlaySource()
 {
-    return
+    static HdContainerDataSourceHandle const result =
         HdRetainedContainerDataSource::New(
             HdInstancedBySchema::GetSchemaToken(),
             UsdImaging_NiPrototypeSceneIndex::GetInstancedByDataSource());
+    return result;
 }
 
 HdContainerDataSourceHandle
-_PrototypeRootOverlaySource()
+_PrototypeRootOverlaySource(const HdContainerDataSourceHandle &ds)
 {
-    return
+    static HdContainerDataSourceHandle const overlayDs = 
         HdRetainedContainerDataSource::New(
             HdInstancedBySchema::GetSchemaToken(),
             UsdImaging_NiPrototypeSceneIndex::GetInstancedByDataSource(),
             // The prototypes should always be defined at the origin.
             HdXformSchema::GetSchemaToken(),
             _ResetXformToIdentityDataSource());
+    return HdOverlayContainerDataSource::OverlayedContainerDataSources(
+        overlayDs, ds);
 }
 
 }
@@ -91,19 +77,23 @@ _PrototypeRootOverlaySource()
 UsdImaging_NiPrototypeSceneIndexRefPtr
 UsdImaging_NiPrototypeSceneIndex::New(
     HdSceneIndexBaseRefPtr const &inputSceneIndex,
-    const bool forPrototype)
+    const bool forNativePrototype,
+    HdContainerDataSourceHandle const &prototypeRootOverlayDs)
 {
     return TfCreateRefPtr(
         new UsdImaging_NiPrototypeSceneIndex(
-            inputSceneIndex, forPrototype));
+            inputSceneIndex, forNativePrototype, prototypeRootOverlayDs));
 }
 
 UsdImaging_NiPrototypeSceneIndex::
 UsdImaging_NiPrototypeSceneIndex(
     HdSceneIndexBaseRefPtr const &inputSceneIndex,
-    const bool forPrototype)
+    const bool forNativePrototype,
+    HdContainerDataSourceHandle const &prototypeRootOverlayDs)
   : HdSingleInputFilteringSceneIndexBase(inputSceneIndex)
-  , _forPrototype(forPrototype)
+  , _forNativePrototype(forNativePrototype)
+  , _prototypeRootOverlaySource(
+      _PrototypeRootOverlaySource(prototypeRootOverlayDs))
 {
 }
 
@@ -163,7 +153,7 @@ UsdImaging_NiPrototypeSceneIndex::GetPrim(
         return prim;
     }
 
-    if (!_forPrototype) {
+    if (!_forNativePrototype) {
         return prim;
     }
 
@@ -176,21 +166,15 @@ UsdImaging_NiPrototypeSceneIndex::GetPrim(
     if (primPath.GetPathElementCount() == n) {
         // primPath is /UsdNiInstancer/UsdNiPrototype
 
-        static const HdContainerDataSourceHandle prototypeRootOverlaySource =
-            _PrototypeRootOverlaySource();
-
         prim.dataSource = HdOverlayContainerDataSource::New(
-            prototypeRootOverlaySource,
+            _prototypeRootOverlaySource,
             prim.dataSource);
     } else {
         // primPath is an ancestor of /UsdNiInstancer/UsdNiPrototype
 
-        static const HdContainerDataSourceHandle underlaySource =
-            _UnderlaySource();
-
         prim.dataSource = HdOverlayContainerDataSource::New(
             prim.dataSource,
-            underlaySource);
+            _UnderlaySource());
     }
 
     return prim;

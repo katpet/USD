@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/renderSettings.h"
 
@@ -63,6 +46,7 @@ void TfHashAppend(
             rp.apertureSize,
             rp.dataWindowNDC,
             rp.disableMotionBlur,
+            rp.disableDepthOfField,
             rp.namespacedSettings);
 }
 
@@ -73,7 +57,6 @@ HdRenderSettings::HdRenderSettings(
     SdfPath const& id)
     : HdBprim(id)
     , _active(false)
-    , _settingsVersion(1)
 {
 }
 
@@ -85,16 +68,18 @@ HdRenderSettings::IsActive() const
     return _active;
 }
 
+bool
+HdRenderSettings::IsValid() const
+{
+    // The RenderSettings prim is considered valid if there is at least one 
+    // RenderProduct, and we have a camera path specified.
+    return !_products.empty() && !_products[0].cameraPath.IsEmpty();
+}
+
 const HdRenderSettings::NamespacedSettings&
 HdRenderSettings::GetNamespacedSettings() const
 {
     return _namespacedSettings;
-}
-
-unsigned int
-HdRenderSettings::GetSettingsVersion() const
- {
-    return _settingsVersion;
 }
 
 const HdRenderSettings::RenderProducts&
@@ -121,6 +106,12 @@ HdRenderSettings::GetRenderingColorSpace() const
     return _renderingColorSpace;
 }
 
+const VtValue&
+HdRenderSettings::GetShutterInterval() const
+{
+    return _vShutterInterval;
+}
+
 void
 HdRenderSettings::Sync(
     HdSceneDelegate *sceneDelegate,
@@ -142,7 +133,6 @@ HdRenderSettings::Sync(
             GetId(), HdRenderSettingsPrimTokens->namespacedSettings);
         if (vSettings.IsHolding<VtDictionary>()) {
             _namespacedSettings = vSettings.UncheckedGet<VtDictionary>();
-            _settingsVersion++;
         }
     }
 
@@ -181,6 +171,11 @@ HdRenderSettings::Sync(
         if (vColorSpace.IsHolding<TfToken>()) {
             _renderingColorSpace = vColorSpace.UncheckedGet<TfToken>();
         }
+    }
+
+    if (*dirtyBits & HdRenderSettings::DirtyShutterInterval) {
+        _vShutterInterval = sceneDelegate->Get(
+            GetId(), HdRenderSettingsPrimTokens->shutterInterval);
     }
 
     // Allow subclasses to do any additional processing if necessary.
@@ -244,6 +239,7 @@ bool operator==(const HdRenderSettings::RenderProduct& lhs,
         && lhs.apertureSize == rhs.apertureSize
         && lhs.dataWindowNDC == rhs.dataWindowNDC
         && lhs.disableMotionBlur == rhs.disableMotionBlur
+        && lhs.disableDepthOfField == rhs.disableDepthOfField
         && lhs.namespacedSettings == rhs.namespacedSettings;
 }
 

@@ -2,25 +2,8 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 import contextlib, os, platform, sys, unittest
 from pxr import Ar,Sdf,Usd,Tf
@@ -145,18 +128,40 @@ class TestUsdNotices(unittest.TestCase):
         def OnResync(notice, stage):
             self.assertEqual(notice.GetStage(), stage)
             self.assertEqual(notice.GetResyncedPaths(), [Sdf.Path("/Foo")])
+            self.assertEqual(notice.GetResolvedAssetPathsResyncedPaths(), [])
             self.assertEqual(notice.GetChangedInfoOnlyPaths(), [])
             self.assertTrue(notice.AffectedObject(stage.GetPrimAtPath("/Foo")))
             self.assertTrue(notice.ResyncedObject(stage.GetPrimAtPath("/Foo")))
-            self.assertTrue(not notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ResolvedAssetPathsResynced(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo")))
 
         def OnUpdate(notice, stage):
             self.assertEqual(notice.GetStage(), stage)
             self.assertEqual(notice.GetResyncedPaths(), [])
+            self.assertEqual(notice.GetResolvedAssetPathsResyncedPaths(), [])
             self.assertEqual(notice.GetChangedInfoOnlyPaths(), [Sdf.Path("/Foo")])
             self.assertTrue(notice.AffectedObject(stage.GetPrimAtPath("/Foo")))
-            self.assertTrue(not notice.ResyncedObject(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.AffectedObject(stage.GetPrimAtPath("/Foo/Bar")))
+            self.assertFalse(notice.ResyncedObject(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ResyncedObject(stage.GetPrimAtPath("/Foo/Bar")))
+            self.assertFalse(notice.ResolvedAssetPathsResynced(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ResolvedAssetPathsResynced(stage.GetPrimAtPath("/Foo/Bar")))
             self.assertTrue(notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo/Bar")))
+
+        def OnAssetPathResync(notice, stage):
+            self.assertEqual(notice.GetStage(), stage)
+            self.assertEqual(notice.GetResyncedPaths(), [])
+            self.assertEqual(notice.GetResolvedAssetPathsResyncedPaths(), [Sdf.Path("/")])
+            self.assertEqual(notice.GetChangedInfoOnlyPaths(), [Sdf.Path("/")])
+            self.assertTrue(notice.AffectedObject(stage.GetPrimAtPath("/Foo")))
+            self.assertTrue(notice.AffectedObject(stage.GetPrimAtPath("/Foo/Bar")))
+            self.assertFalse(notice.ResyncedObject(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ResyncedObject(stage.GetPrimAtPath("/Foo/Bar")))
+            self.assertTrue(notice.ResolvedAssetPathsResynced(stage.GetPrimAtPath("/Foo")))
+            self.assertTrue(notice.ResolvedAssetPathsResynced(stage.GetPrimAtPath("/Foo/Bar")))
+            self.assertFalse(notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo")))
+            self.assertFalse(notice.ChangedInfoOnly(stage.GetPrimAtPath("/Foo/Bar")))
 
         for fmt in allFormats:
             self._ResetCounters()
@@ -166,9 +171,17 @@ class TestUsdNotices(unittest.TestCase):
                                                        OnResync, s)
             s.DefinePrim("/Foo")
 
+            del objectsChanged
+            s.DefinePrim("/Foo/Bar")
+
             objectsChanged = Tf.Notice.Register(Usd.Notice.ObjectsChanged, 
-                                                       OnUpdate, s)
+                                                OnUpdate, s)
             s.GetPrimAtPath("/Foo").SetMetadata("comment", "")
+
+            objectsChanged = Tf.Notice.Register(Usd.Notice.ObjectsChanged,
+                                                OnAssetPathResync, s)
+            s.SetMetadata("expressionVariables", {"X":"Y"})
+
         del objectsChanged
 
     def test_ObjectsChangedNoticeForAttributes(self):
@@ -429,28 +442,36 @@ class TestUsdNotices(unittest.TestCase):
             self.assertTrue(received, "Did not receive notice")
 
         # Author a change to the expression variables in the root layer
-        # stack. We currently expect a resync from the root since there
-        # may be asset-valued attributes (that we may have never pulled
-        # a value from) that depend on those variables.
+        # stack. This should not send a resync for any objects, but it
+        # should send a resolved asset path resync covering the entire stage
+        # since there may be asset-valued attributes (that we may have never 
+        # pulled a value from) that depend on those variables.
         def RootResync(notice):
-            self.assertEqual(notice.GetResyncedPaths(), ['/'])
-            self.assertEqual(notice.GetChangedFields('/'), [])
+            self.assertEqual(notice.GetResyncedPaths(), [])
+            self.assertEqual(notice.GetResolvedAssetPathsResyncedPaths(), ['/'])
+            self.assertEqual(notice.GetChangedInfoOnlyPaths(), ['/'])
+            self.assertEqual(notice.GetChangedFields('/'), ['expressionVariables'])
 
         with ExpectedNotice(s, RootResync):
             rootLayer.expressionVariables = {'ROOT':'B'}
 
         # Author a change to the expression variables in a referenced layer
-        # stack. We expect to resync only the prim(s) that are referencing
-        # that layer.
+        # stack. This should not send a resync for the prim(s) that are
+        # referencing that layer, but it should send a resolved asset path
+        # resync covering those two prims.
         def ReferencingPrimsResync(notice):
-            self.assertEqual(notice.GetResyncedPaths(), ['/Ref1', '/Ref2'])
+            self.assertEqual(notice.GetResyncedPaths(), [])
+            self.assertEqual(notice.GetResolvedAssetPathsResyncedPaths(), 
+                             ['/Ref1', '/Ref2'])
 
             # XXX:
             # 'expressionVariables' should not show up as changed fields on
             # /Ref1 and /Ref2 since that field was actually authored on the
-            # pseudo-root. This is a pre-existing bug involving layer
-            # metadata fields that cause resyncs for referencing prims.
-            # 'defaultPrim' is another example of such a field.
+            # pseudo-root of the referenced layer. This is a pre-existing bug
+            # involving layer metadata fields that cause resyncs for referencing
+            # prims.  'defaultPrim' is another example of such a field.
+            self.assertEqual(
+                notice.GetChangedInfoOnlyPaths(), ['/Ref1', '/Ref2'])
             self.assertEqual(
                 notice.GetChangedFields('/Ref1'), ['expressionVariables'])
             self.assertEqual(

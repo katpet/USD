@@ -1,25 +1,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 # Save the current value of BUILD_SHARED_LIBS and restore it at
@@ -37,23 +20,25 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 find_package(Threads REQUIRED)
 set(PXR_THREAD_LIBS "${CMAKE_THREAD_LIBS_INIT}")
 
-# Find Boost package before getting any boost specific components as we need to
-# disable boost-provided cmake config, based on the boost version found.
-find_package(Boost REQUIRED)
+if(PXR_ENABLE_PYTHON_SUPPORT OR PXR_ENABLE_OPENVDB_SUPPORT)
+    # Find Boost package before getting any boost specific components as we need to
+    # disable boost-provided cmake config, based on the boost version found.
+    find_package(Boost REQUIRED)
 
-# Boost provided cmake files (introduced in boost version 1.70) result in 
-# inconsistent build failures on different platforms, when trying to find boost 
-# component dependencies like python, etc. Refer some related
-# discussions:
-# https://github.com/boostorg/python/issues/262#issuecomment-483069294
-# https://github.com/boostorg/boost_install/issues/12#issuecomment-508683006
-#
-# Hence to avoid issues with Boost provided cmake config, Boost_NO_BOOST_CMAKE
-# is enabled by default for boost version 1.70 and above. If a user explicitly 
-# set Boost_NO_BOOST_CMAKE to Off, following will be a no-op.
-option(Boost_NO_BOOST_CMAKE "Disable boost-provided cmake config" ON)
-if (Boost_NO_BOOST_CMAKE)
-    message(STATUS "Disabling boost-provided cmake config")
+    # Boost provided cmake files (introduced in boost version 1.70) result in 
+    # inconsistent build failures on different platforms, when trying to find boost 
+    # component dependencies like python, etc. Refer some related
+    # discussions:
+    # https://github.com/boostorg/python/issues/262#issuecomment-483069294
+    # https://github.com/boostorg/boost_install/issues/12#issuecomment-508683006
+    #
+    # Hence to avoid issues with Boost provided cmake config, Boost_NO_BOOST_CMAKE
+    # is enabled by default for boost version 1.70 and above. If a user explicitly 
+    # set Boost_NO_BOOST_CMAKE to Off, following will be a no-op.
+    option(Boost_NO_BOOST_CMAKE "Disable boost-provided cmake config" ON)
+    if (Boost_NO_BOOST_CMAKE)
+      message(STATUS "Disabling boost-provided cmake config")
+    endif()
 endif()
 
 if(PXR_ENABLE_PYTHON_SUPPORT)
@@ -160,7 +145,7 @@ if(WIN32)
     # Math functions are linked automatically by including math.h on Windows.
     set(M_LIB "")
 else()
-    find_library(M_LIB m)
+    set(M_LIB m)
 endif()
 
 if (NOT PXR_MALLOC_LIBRARY)
@@ -182,14 +167,16 @@ if (PXR_BUILD_DOCUMENTATION)
                 "doxygen not found, required for PXR_BUILD_DOCUMENTATION")
     endif()
 
-    find_program(DOT_EXECUTABLE
-        NAMES dot
-    )
-    if (EXISTS ${DOT_EXECUTABLE})
-        message(STATUS "Found dot: ${DOT_EXECUTABLE}") 
-    else()
-        message(FATAL_ERROR
-                "dot not found, required for PXR_BUILD_DOCUMENTATION")
+    if (PXR_BUILD_HTML_DOCUMENTATION)
+        find_program(DOT_EXECUTABLE
+            NAMES dot
+        )
+        if (EXISTS ${DOT_EXECUTABLE})
+            message(STATUS "Found dot: ${DOT_EXECUTABLE}") 
+        else()
+            message(FATAL_ERROR
+                    "dot not found, required for PXR_BUILD_DOCUMENTATION")
+        endif()
     endif()
 endif()
 
@@ -227,24 +214,29 @@ if (PXR_BUILD_IMAGING)
             cmake_policy(SET CMP0072 OLD)
         endif()
         find_package(OpenGL REQUIRED)
+        add_definitions(-DPXR_GL_SUPPORT_ENABLED)
     endif()
     # --Metal
     if (PXR_ENABLE_METAL_SUPPORT)
         add_definitions(-DPXR_METAL_SUPPORT_ENABLED)
     endif()
     if (PXR_ENABLE_VULKAN_SUPPORT)
+        message(STATUS "Enabling experimental feature Vulkan support")
         if (EXISTS $ENV{VULKAN_SDK})
             # Prioritize the VULKAN_SDK includes and packages before any system
             # installed headers. This is to prevent linking against older SDKs
             # that may be installed by the OS.
             # XXX This is fixed in cmake 3.18+
-            include_directories(BEFORE SYSTEM $ENV{VULKAN_SDK} $ENV{VULKAN_SDK}/include $ENV{VULKAN_SDK}/lib)
-            set(ENV{PATH} "$ENV{VULKAN_SDK}:$ENV{VULKAN_SDK}/include:$ENV{VULKAN_SDK}/lib:$ENV{PATH}")
+            include_directories(BEFORE SYSTEM $ENV{VULKAN_SDK} $ENV{VULKAN_SDK}/include $ENV{VULKAN_SDK}/lib $ENV{VULKAN_SDK}/source)
+            set(ENV{PATH} "$ENV{VULKAN_SDK}:$ENV{VULKAN_SDK}/include:$ENV{VULKAN_SDK}/lib:$ENV{VULKAN_SDK}/source:$ENV{PATH}")
             find_package(Vulkan REQUIRED)
             list(APPEND VULKAN_LIBS Vulkan::Vulkan)
 
             # Find the extra vulkan libraries we need
             set(EXTRA_VULKAN_LIBS shaderc_combined)
+            if (WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+                set(EXTRA_VULKAN_LIBS shaderc_combinedd)
+            endif()
             foreach(EXTRA_LIBRARY ${EXTRA_VULKAN_LIBS})
                 find_library("${EXTRA_LIBRARY}_PATH" NAMES "${EXTRA_LIBRARY}" PATHS $ENV{VULKAN_SDK}/lib)
                 list(APPEND VULKAN_LIBS "${${EXTRA_LIBRARY}_PATH}")
@@ -328,6 +320,10 @@ if(PXR_ENABLE_OSL_SUPPORT)
     find_package(OSL REQUIRED)
     set(REQUIRES_Imath TRUE)
     add_definitions(-DPXR_OSL_SUPPORT_ENABLED)
+endif()
+
+if (PXR_BUILD_ANIMX_TESTS)
+    find_package(AnimX REQUIRED)
 endif()
 
 # ----------------------------------------------

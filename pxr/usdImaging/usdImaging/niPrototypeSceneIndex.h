@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_IMAGING_NI_PROTOTYPE_SCENE_INDEX_H
 #define PXR_USD_IMAGING_USD_IMAGING_NI_PROTOTYPE_SCENE_INDEX_H
@@ -46,7 +29,7 @@ TF_DECLARE_REF_PTRS(UsdImaging_NiPrototypeSceneIndex);
 /// to be instanced by the instancer /UsdNiInstancer created
 /// by the UsdImaging_InstanceAggregationSceneIndex.
 /// Note that /UsdNiInstancer/UsdPrototype corresponds to a USD prototype.
-/// That is, te isolating scene index in the prototype propagating scene index
+/// That is, the isolating scene index in the prototype propagating scene index
 /// is taking a USD prototype at, e.g., /__Prototype_1 and moves it underneath
 /// /UsdNiInstancer/UsdPrototype.
 ///
@@ -65,14 +48,28 @@ class UsdImaging_NiPrototypeSceneIndex
             : public HdSingleInputFilteringSceneIndexBase
 {
 public:
-    // forPrototype = false indicates that this scene index is instantiated
-    // for the USD stage with all USD prototypes filtered out.
-    // forPrototype = true indicates that it is instantiated for a USD
+    // forNativePrototype = false indicates that this scene index is
+    // instantiated for the USD stage with all USD prototypes filtered out.
+    // forNativePrototype = true indicates that it is instantiated for a USD
     // prototype and it needs to populate the instancedBy data source.
+    //
+    // The given data source is overlayed over the prototype root prim's
+    // data source.
+    //
+    // If instances with a particular opinion about, say, purpose, are
+    // aggregated together, this opinion needs to be applied to the respective
+    // prototype. This can be done by passing it as prototypeRootOverlayDs
+    // here. A later flattening scene index can then apply the opinion to the
+    // descendants of the prototype root that do not have a stronger opinion.
+    //
+    // Note that the flattening scene index is not flattening
+    // model:applyDrawMode - but it still has an effect on the prototype root.
+    //
     static
     UsdImaging_NiPrototypeSceneIndexRefPtr
     New(HdSceneIndexBaseRefPtr const &inputSceneIndex,
-        bool forPrototype);
+        bool forNativePrototype,
+        HdContainerDataSourceHandle const &prototypeRootOverlayDs);
 
     HdSceneIndexPrim GetPrim(const SdfPath &primPath) const override;
 
@@ -107,9 +104,11 @@ protected:
 private:
     UsdImaging_NiPrototypeSceneIndex(
         HdSceneIndexBaseRefPtr const &inputSceneIndex,
-        bool forPrototype);
+        bool forNativePrototype,
+        HdContainerDataSourceHandle const &prototypeRootOverlayDso);
 
-    const bool _forPrototype;
+    const bool _forNativePrototype;
+    HdContainerDataSourceHandle const _prototypeRootOverlaySource;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

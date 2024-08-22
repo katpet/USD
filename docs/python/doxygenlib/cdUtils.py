@@ -1,26 +1,8 @@
 #
 # Copyright 2023 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 # cdUtils.py
 #
@@ -32,18 +14,21 @@
 import os
 import sys
 import inspect
-import re
+import traceback
 
 __debugMode = True
 
 ATTR_NOT_IN_PYTHON = 'notinpython'
 ATTR_STATIC_METHOD = 'staticmethod'
 
-LABEL_STATIC = '**static** '
+LABEL_STATIC = '**classmethod** '
 
 def Error(msg):
     """Output a fatal error message and exit the program."""
-    print("Error: %s" % msg)
+    print("Error: %s" % msg, flush=True)
+    if __debugMode:
+        traceback.print_stack()
+        sys.stderr.flush()
     sys.exit(1)
 
 def Warn(msg):
@@ -59,32 +44,6 @@ def SetDebugMode(debugOn):
     """Turn debug mode on or off. Default is off."""
     global __debugMode
     __debugMode = debugOn
-
-def Import(cmd):
-    """Perform an import, inserting into the calling module's global scope."""
-
-    # find the global frame for the calling module
-    frame = inspect.currentframe()
-    module = frame.f_code.co_filename
-    modcount = 0
-    while frame and frame.f_back:
-        parent_module = frame.f_back.f_code.co_filename
-        if parent_module != module:
-            module = parent_module
-            modcount += 1
-            if modcount > 1:
-                break
-        frame = frame.f_back
-
-    # try to execute the import command (really, any command)
-    try:
-        globals = frame.f_globals
-        locals = frame.f_locals
-        exec(compile(cmd, '<string>', 'single'), globals, locals)
-        return True
-    except Exception as e:
-        print("Error: %s" % e)
-        return False
 
 def GetArg(optnames, default=False):
     """Return True if any of the args exist in sys.argv."""
@@ -131,13 +90,16 @@ Global options:
   --debug or -d   = turn on debugging mode
   --help or -h    = display this program usage statement
   --pythonPath    = optional path to add to python lib paths
+  --dllPath       = optional ;-separated paths to add to Window's list of
+                    directories you may load .dll libraries from. Ignored if not
+                    on Windows.
 
 Docstring format:
   Write Python doc strings from Doyxgen C++ comments. Writes
   output to file or directory as specified by --output option.
 
   --package or -p = the package name, e.g. pxr
-  --module or -m  = the module name, e.g. UsdGeom, or a list of 
+  --module or -m  = the module name, e.g. UsdGeom, or a list of
                     comma-separated modules, e.g. Usd,UsdGeom,UsdShade
     """ % (progname, progname)
     print(usageMsg)

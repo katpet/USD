@@ -1,34 +1,21 @@
 //
 // Copyright 2023 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_SDF_PREDICATE_EXPRESSION_H
 #define PXR_USD_SDF_PREDICATE_EXPRESSION_H
 
 #include "pxr/pxr.h"
 #include "pxr/usd/sdf/api.h"
+#include "pxr/base/tf/hash.h"
 #include "pxr/base/vt/value.h"
 
+#include <iosfwd>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -95,11 +82,21 @@ public:
         std::string argName;
         VtValue value;
 
+        template <class HashState>
+        friend void TfHashAppend(HashState &h, FnArg const &arg) {
+            h.Append(arg.argName, arg.value);
+        }
+
         friend bool operator==(FnArg const &l, FnArg const &r) {
             return std::tie(l.argName, l.value) == std::tie(r.argName, r.value);
         }
         friend bool operator!=(FnArg const &l, FnArg const &r) {
-            return std::tie(l.argName, l.value) != std::tie(r.argName, r.value);
+            return !(l == r);
+        }
+
+        friend void swap(FnArg &l, FnArg &r) {
+            swap(l.argName, r.argName);
+            swap(l.value, r.value);
         }
     };
 
@@ -117,6 +114,24 @@ public:
         Kind kind;
         std::string funcName;
         std::vector<FnArg> args;
+
+        template <class HashState>
+        friend void TfHashAppend(HashState &h, FnCall const &c) {
+            h.Append(c.kind, c.funcName, c.args);
+        }
+
+        friend bool operator==(FnCall const &l, FnCall const &r) {
+            return std::tie(l.kind, l.funcName, l.args) ==
+                std::tie(r.kind, r.funcName, r.args);
+        }
+        friend bool operator!=(FnCall const &l, FnCall const &r) {
+            return !(l == r);
+        }
+        friend void swap(FnCall &l, FnCall &r) {
+            auto lt = std::tie(l.kind, l.funcName, l.args);
+            auto rt = std::tie(r.kind, r.funcName, r.args);
+            swap(lt, rt);
+        }        
     };
 
     /// Construct the empty expression whose bool-operator returns false.
@@ -236,6 +251,28 @@ public:
     }
 
 private:
+    template <class HashState>
+    friend void TfHashAppend(HashState &h, SdfPredicateExpression const &expr) {
+        h.Append(expr._ops, expr._calls, expr._parseError);
+    }
+
+    friend bool
+    operator==(SdfPredicateExpression const &l,
+               SdfPredicateExpression const &r) {
+        return std::tie(l._ops, l._calls, l._parseError) ==
+               std::tie(r._ops, r._calls, r._parseError);
+    }
+
+    friend bool
+    operator!=(SdfPredicateExpression const &l,
+               SdfPredicateExpression const &r) {
+        return !(l == r);
+    }
+
+    SDF_API
+    friend std::ostream &
+    operator<<(std::ostream &, SdfPredicateExpression const &);
+
     // The expression is represented in function-call style, but *in reverse* to
     // facilitate efficient assembly.  For example, an expression like "a and b"
     // would be represented as { Call(b), Call(a), And } rather than { And,

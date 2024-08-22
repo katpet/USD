@@ -1,25 +1,8 @@
 //
 // Copyright 2022 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/stageSceneIndex.h"
 
@@ -261,6 +244,9 @@ UsdImagingStageSceneIndex::GetPrim(const SdfPath &path) const
     if (prim.IsInstanceProxy()) {
         return s_emptyPrim;
     }
+    if (!_GetPrimPredicate()(prim)) {
+        return s_emptyPrim;
+    }
 
     const TfToken subprim =
         path.IsPropertyPath() ? path.GetNameToken() : TfToken();
@@ -312,7 +298,7 @@ UsdImagingStageSceneIndex::GetChildPrimPaths(
             entry.primAdapter->GetPopulationMode() ==
                 UsdImagingPrimAdapter::RepresentsSelfAndDescendents)) {
         UsdPrimSiblingRange range =
-            prim.GetFilteredChildren(_GetTraversalPredicate());
+            prim.GetFilteredChildren(_GetPrimPredicate());
         for (const UsdPrim &child: range) {
             result.push_back(child.GetPath());
         }
@@ -337,11 +323,13 @@ UsdImagingStageSceneIndex::GetChildPrimPaths(
 
 // ---------------------------------------------------------------------------
 
-void UsdImagingStageSceneIndex::SetTime(UsdTimeCode time)
+void UsdImagingStageSceneIndex::SetTime(
+    UsdTimeCode time,
+    const bool forceDirtyingTimeDeps)
 {
     TRACE_FUNCTION();
 
-    if (_stageGlobals.GetTime() == time) {
+    if (_stageGlobals.GetTime() == time && !forceDirtyingTimeDeps) {
         return;
     }
 
@@ -408,7 +396,7 @@ void UsdImagingStageSceneIndex::_PopulateSubtree(UsdPrim subtreeRoot)
     HdSceneIndexObserver::AddedPrimEntries addedPrims;
     size_t lastEnd = 0;
 
-    UsdPrimRange range(subtreeRoot, _GetTraversalPredicate());
+    UsdPrimRange range(subtreeRoot, _GetPrimPredicate());
 
     for (auto it = range.begin(); it != range.end(); ++it) {
         const UsdPrim &prim = *it;
@@ -458,8 +446,8 @@ void UsdImagingStageSceneIndex::_PopulateSubtree(UsdPrim subtreeRoot)
     _SendPrimsAdded(addedPrims);
 }
 
-Usd_PrimFlagsConjunction
-UsdImagingStageSceneIndex::_GetTraversalPredicate() const
+Usd_PrimFlagsPredicate
+UsdImagingStageSceneIndex::_GetPrimPredicate() const
 {
     // Note that it differs from the UsdPrimDefaultPredicate by not requiring
     // UsdPrimIsDefined. This way, we pick up instance and over's and their
@@ -508,7 +496,7 @@ UsdImagingStageSceneIndex::_OnUsdObjectsChanged(
     const UsdNotice::ObjectsChanged::PathRange pathsToResync =
         notice.GetResyncedPaths();
     for (auto it = pathsToResync.begin(); it != pathsToResync.end(); ++it) {
-        if (it->IsPrimPath()) {
+        if (it->IsAbsoluteRootOrPrimPath()) {
             _usdPrimsToResync.push_back(*it);
             TF_DEBUG(USDIMAGING_CHANGES).Msg(" - Resync queued: %s\n",
                     it->GetText());
@@ -516,9 +504,15 @@ UsdImagingStageSceneIndex::_OnUsdObjectsChanged(
             _usdPropertiesToResync[it->GetPrimPath()]
                 .push_back(it->GetNameToken());
             TF_DEBUG(USDIMAGING_CHANGES).Msg(
-                    " - Property update due to property resync queued: %s\n",
+                    " - Property resync queued: %s\n",
                     it->GetText());
         }
+
+        // Clear out recorded asset path dependencies since they are
+        // subsumed by the object resyncs. This ensures we don't have stale
+        // entries for dependent objects that have been removed from the
+        // scene.
+        _stageGlobals.RemoveAssetPathDependentsUnder(*it);
     }
 
     // These paths represent objects which have been modified in a 
@@ -530,7 +524,7 @@ UsdImagingStageSceneIndex::_OnUsdObjectsChanged(
     const SdfSchema& schema = SdfSchema::GetInstance();
 
     for (auto it = pathsToUpdate.begin(); it != pathsToUpdate.end(); ++it) {
-        if (it->IsPrimPath()) {
+        if (it->IsAbsoluteRootOrPrimPath()) {
             // By default, resync the prim if there are any changes to plugin
             // fields and ignore changes to built-in fields. Schemas typically
             // register their own plugin metadata fields instead of relying on
@@ -553,6 +547,17 @@ UsdImagingStageSceneIndex::_OnUsdObjectsChanged(
             TF_DEBUG(USDIMAGING_CHANGES).Msg(" - Property update queued: %s\n",
                     it->GetText());
         }
+    }
+
+    // These paths represent objects under which asset paths have
+    // been invalidated. For each such path, we find all of the
+    // asset path-dependent objects that have been recorded in the stage
+    // globals and invalidate just those objects.
+    const UsdNotice::ObjectsChanged::PathRange assetPathsToUpdate =
+        notice.GetResolvedAssetPathsResyncedPaths();
+    for (const SdfPath &path : assetPathsToUpdate) {
+        _stageGlobals.InvalidateAssetPathDependentsUnder(
+            path, &_usdPrimsToResync, &_usdPropertiesToUpdate);
     }
 }
 
@@ -781,12 +786,21 @@ UsdImagingStageSceneIndex::_ComputeDirtiedEntries(
 // ---------------------------------------------------------------------------
 
 void UsdImagingStageSceneIndex::_StageGlobals::FlagAsTimeVarying(
-        const SdfPath & primPath,
+        const SdfPath & hydraPath,
         const HdDataSourceLocator & locator) const
 {
     _VariabilityMap::accessor accessor;
-    _timeVaryingLocators.insert(accessor, primPath);
+    _timeVaryingLocators.insert(accessor, hydraPath);
     accessor->second.insert(locator);
+}
+
+void UsdImagingStageSceneIndex::_StageGlobals::FlagAsAssetPathDependent(
+        const SdfPath & usdPath) const
+{
+    TRACE_FUNCTION();
+
+    std::lock_guard<std::mutex> lock(_assetPathDependentsMutex);
+    _assetPathDependents.insert(usdPath);
 }
 
 UsdTimeCode UsdImagingStageSceneIndex::_StageGlobals::GetTime() const
@@ -808,10 +822,62 @@ void UsdImagingStageSceneIndex::_StageGlobals::SetTime(UsdTimeCode time,
     }
 }
 
+void
+UsdImagingStageSceneIndex::_StageGlobals::RemoveAssetPathDependentsUnder(
+    const SdfPath& path)
+{
+    TRACE_FUNCTION();
+
+    std::lock_guard<std::mutex> lock(_assetPathDependentsMutex);
+
+    auto beginAndEndPair = SdfPathFindPrefixedRange(
+        _assetPathDependents.begin(), _assetPathDependents.end(), path);
+
+    _assetPathDependents.erase(beginAndEndPair.first, beginAndEndPair.second);
+}
+
+void
+UsdImagingStageSceneIndex::_StageGlobals::InvalidateAssetPathDependentsUnder(
+    const SdfPath &path,
+    std::vector<SdfPath> *primsToInvalidate,
+    std::map<SdfPath, TfTokenVector> *propertiesToInvalidate) const
+{
+    TRACE_FUNCTION();
+
+    std::lock_guard<std::mutex> lock(_assetPathDependentsMutex);
+
+    auto beginAndEndPair = SdfPathFindPrefixedRange(
+        _assetPathDependents.begin(), _assetPathDependents.end(), path);
+
+    for (auto it = beginAndEndPair.first; it != beginAndEndPair.second; ++it) {
+        const SdfPath &depPath = *it;
+        if (depPath.IsAbsoluteRootOrPrimPath()) {
+            primsToInvalidate->push_back(depPath);
+
+            TF_DEBUG(USDIMAGING_CHANGES).Msg(
+                " - Resync due to asset path resync queued: %s\n",
+                depPath.GetText());
+        }
+        else if (depPath.IsPrimPropertyPath()) {
+            (*propertiesToInvalidate)[depPath.GetPrimPath()].push_back(
+                depPath.GetNameToken());
+
+            TF_DEBUG(USDIMAGING_CHANGES).Msg(
+                " - Property update due to asset path resync queued: %s\n",
+                depPath.GetText());
+        }
+    }
+}
+
 void UsdImagingStageSceneIndex::_StageGlobals::Clear()
 {
     _timeVaryingLocators.clear();
     _time = UsdTimeCode::EarliestTime();
+
+    {
+        std::lock_guard<std::mutex> lock(_assetPathDependentsMutex);
+        _assetPathDependents.clear();
+    }
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

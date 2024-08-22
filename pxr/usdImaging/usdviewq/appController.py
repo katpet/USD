@@ -1,25 +1,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 # pylint: disable=round-builtin
@@ -31,7 +14,7 @@ from __future__ import print_function
 from .qt import QtCore, QtGui, QtWidgets, QtActionWidgets
 
 # Stdlib components
-import re, sys, os, cProfile, pstats, traceback
+import re, sys, os, cProfile, pstats, traceback, unicodedata
 from itertools import groupby
 from time import time, sleep
 from collections import deque, OrderedDict
@@ -393,6 +376,8 @@ class AppController(QtCore.QObject):
             self._mallocTags = parserData.mallocTagStats
 
             self._allowViewUpdates = True
+            self._allowAsync = parserData.allowAsync
+            self._bboxstandin = parserData.bboxstandin
 
             # When viewer mode is active, the panel sizes are cached so they can
             # be restored later.
@@ -532,6 +517,14 @@ class AppController(QtCore.QObject):
             # to slow down rendering to self.framesPerSecond fps.
             self._qtimer.setInterval(0)
             self._lastFrameTime = time()
+
+            if self._allowAsync:
+                self._asyncTimer = QtCore.QTimer(self)
+                self._asyncTimer.setInterval(100)
+                self._asyncTimer.timeout.connect(self._updateAsyncTimer)
+                self._asyncTimer.start()
+            else:
+                self._asyncTimer = None
 
             # Initialize the upper HUD info
             self._upperHUDInfo = dict()
@@ -1744,23 +1737,17 @@ class AppController(QtCore.QObject):
             action.setCheckable(True)
             return action
 
-        def setColorSpace(action):
+        def setOcioColorSpace(action):
             self._dataModel.viewSettings.setOcioSettings(\
                 colorSpace = str(action.text()))
             self._dataModel.viewSettings.colorCorrectionMode =\
                 ColorCorrectionModes.OPENCOLORIO
 
-        def setOcioConfig(action):
+        def setOcioDisplayView(action):
             display = str(action.parent().title())
             view = str(action.text())
-            if hasattr(config, 'getDisplayViewColorSpaceName'):
-                # OCIO version 2
-                colorSpace = config.getDisplayViewColorSpaceName(display, view)
-            else:
-                # OCIO version 1
-                colorSpace = config.getDisplayColorSpaceName(display, view)
-            self._dataModel.viewSettings.setOcioSettings(colorSpace,\
-                display, view)
+            self._dataModel.viewSettings.setOcioSettings(\
+                display=display, view=view)
             self._dataModel.viewSettings.colorCorrectionMode =\
                 ColorCorrectionModes.OPENCOLORIO
 
@@ -1785,7 +1772,7 @@ class AppController(QtCore.QObject):
                 for v in config.getViews(d):
                     a = addAction(displayMenu, v)
                     group.addAction(a)
-                group.triggered.connect(setOcioConfig)
+                group.triggered.connect(setOcioDisplayView)
                 ocioMenu.addMenu(displayMenu)
                 self._ui.ocioDisplayMenus.append(displayMenu)
 
@@ -1800,7 +1787,7 @@ class AppController(QtCore.QObject):
                 colorSpace = cs.getName()
                 a = addAction(ocioMenu, colorSpace)
                 group.addAction(a)
-            group.triggered.connect(setColorSpace)
+            group.triggered.connect(setOcioColorSpace)
             self._ui.ocioColorSpacesActionGroup = group
 
         # TODO Populate looks menu (config.getLooks())
@@ -1842,6 +1829,9 @@ class AppController(QtCore.QObject):
                     parent=self._mainWindow,
                     dataModel=self._dataModel,
                     makeTimer=self._makeTimer)
+
+                self._stageView.allowAsync = self._allowAsync
+                self._stageView.bboxstandin = self._bboxstandin
 
                 self._stageView.fpsHUDInfo = self._fpsHUDInfo
                 self._stageView.fpsHUDKeys = self._fpsHUDKeys
@@ -1952,6 +1942,7 @@ class AppController(QtCore.QObject):
             self._updateCompositionView()
 
             if self._stageView:
+                self._stageView.updateSelection()
                 self._stageView.update()
 
     def updateGUI(self):
@@ -2192,6 +2183,13 @@ class AppController(QtCore.QObject):
 
     # Prim/Attribute search functionality =====================================
 
+    # Defaults to NFKC for ease of use for users. NFKC has a compatbility 
+    # decomposition that NFC does not. This makes it much easier to search with 
+    # just ASCII characters. Some information is lost with the additional 
+    # decomposition, but it's intentional to enable simpler searching.
+    def _normalize_unicode(self, str: str, form = 'NFKC'):
+        return unicodedata.normalize(form, str) 
+
     def _isMatch(self, pattern, isRegex, prim, useDisplayName):
         """
         Determines if the given prim has a name that matches the
@@ -2218,11 +2216,13 @@ class AppController(QtCore.QObject):
         Returns:
             True if the pattern matches the specified prim content, False otherwise. 
         """
+
+        pattern = self._normalize_unicode(pattern)
         if isRegex:
             matchLambda = re.compile(pattern, re.IGNORECASE).search
         else:
-            pattern = pattern.lower()
-            matchLambda = lambda x: pattern in x.lower()
+            pattern = pattern.casefold()
+            matchLambda = lambda x: pattern in x.casefold()
 
         if useDisplayName:
             # typically we would check prim.HasAuthoredDisplayName()
@@ -2232,13 +2232,13 @@ class AppController(QtCore.QObject):
             # so we'd be paying twice the price for each prim
             # search, which on large scenes would be a big performance
             # hit, so we do it this way instead
-            displayName = prim.GetDisplayName()
+            displayName = self._normalize_unicode(prim.GetDisplayName())
             if displayName:
                 return matchLambda(displayName)
             else:
-                return matchLambda(prim.GetName())
+                return matchLambda(self._normalize_unicode(prim.GetName()))
         else:
-            return matchLambda(prim.GetName())
+            return matchLambda(self._normalize_unicode(prim.GetName()))
 
 
     def _findPrims(self, pattern, useRegex=True):
@@ -2363,13 +2363,15 @@ class AppController(QtCore.QObject):
                                 self._propertyLegendAnim)
 
     def _attrViewFindNext(self):
-        if (self._attrSearchString == self._ui.attrViewLineEdit.text() and
+        if (self._attrSearchString == self._normalize_unicode(self._ui.attrViewLineEdit.text()) and
             len(self._attrSearchResults) > 0 and
             self._lastPrimSearched == self._dataModel.selection.getFocusPrim()):
 
             # Go to the next result of the currently ongoing search
-            nextResult = self._attrSearchResults.popleft()
-            itemName = str(nextResult.text(PropertyViewIndex.NAME))
+            index = self._attrSearchResults.popleft()
+            nextResult = self._ui.propertyView.model().data(index)
+            item = self._ui.propertyView.itemFromIndex(index)
+            itemName = nextResult
 
             selectedProp = self._propertiesDict[itemName]
             if isinstance(selectedProp, CustomAttribute):
@@ -2378,9 +2380,9 @@ class AppController(QtCore.QObject):
             else:
                 self._dataModel.selection.setProp(selectedProp)
                 self._dataModel.selection.clearComputedProps()
-            self._ui.propertyView.scrollToItem(nextResult)
+            self._ui.propertyView.scrollToItem(item)
 
-            self._attrSearchResults.append(nextResult)
+            self._attrSearchResults.append(index)
             self._lastPrimSearched = self._dataModel.selection.getFocusPrim()
 
             self._ui.attributeValueEditor.populate(
@@ -2389,25 +2391,16 @@ class AppController(QtCore.QObject):
             self._updateLayerStackView(self._getSelectedObject())
         else:
             # Begin a new search
-            self._attrSearchString = self._ui.attrViewLineEdit.text()
-            attrSearchItems = self._ui.propertyView.findItems(
-                self._ui.attrViewLineEdit.text(),
-                QtCore.Qt.MatchRegExp,
-                PropertyViewIndex.NAME)
+            self._attrSearchString = self._normalize_unicode(self._ui.attrViewLineEdit.text())
+            
+            search1 = deque(self._ui.propertyView.model().match(self._ui.propertyView.model().index(0, 1),
+                PropertyViewDataRoles.NORMALIZED_NAME, self._attrSearchString, -1, QtCore.Qt.MatchContains))
+            search2 = deque(self._ui.propertyView.model().match(self._ui.propertyView.model().index(0, 1),
+                PropertyViewDataRoles.NORMALIZED_NAME, self._attrSearchString, -1, QtCore.Qt.MatchRegExp))
 
-            # Now just search for the string itself
-            otherSearch = self._ui.propertyView.findItems(
-                self._ui.attrViewLineEdit.text(),
-                QtCore.Qt.MatchContains,
-                PropertyViewIndex.NAME)
-
-            # Combine search results and sort by model index so that
-            # we iterate over results from top to bottom.
-            combinedItems = set(attrSearchItems + otherSearch)
+            combinedItems = set(search1 + search2)
             self._attrSearchResults = deque(
-                sorted(combinedItems, 
-                       key=lambda i: self._ui.propertyView.indexFromItem(
-                           i, PropertyViewIndex.NAME)))
+                sorted(combinedItems))
 
             self._lastPrimSearched = self._dataModel.selection.getFocusPrim()
             if (len(self._attrSearchResults) > 0):
@@ -3038,7 +3031,9 @@ class AppController(QtCore.QObject):
             currCameraPath = None
             if currCamera:
                 currCameraPath = currCamera.GetPath()
-            for camera in self._allSceneCameras:
+            
+            cameraListMaxLen = 20
+            for camera in self._allSceneCameras[:cameraListMaxLen]:
                 action = self._ui.menuCameraSelect.addAction(camera.GetName())
                 action.setData(camera.GetPath())
                 action.setToolTip(str(camera.GetPath()))
@@ -3047,6 +3042,82 @@ class AppController(QtCore.QObject):
                 action.triggered[bool].connect(
                     lambda _, cam = camera: self._cameraSelectionChanged(cam))
                 action.setChecked(action.data() == currCameraPath)
+            
+            if len(self._allSceneCameras) > cameraListMaxLen:
+                self._ui.menuCameraSelect.addSeparator()
+                moreCamerasAction = self._ui.menuCameraSelect.addAction("More Cameras...")
+                moreCamerasAction.setToolTip("View All Cameras")
+                moreCamerasAction.triggered.connect(self._showMoreCamerasDialog)
+
+    def _showMoreCamerasDialog(self):
+        """Open dialog box containing all scene cameras."""
+        
+        class CameraItem(QtWidgets.QListWidgetItem):
+
+            def __init__(self, camera, parent=None):
+                super(CameraItem, self).__init__(parent)
+
+                self.camera = camera
+                self.setText(camera.GetName())
+
+         # Recreate the settings dialog
+        self._ui.camerasMoreDialog = QtWidgets.QDialog(self._mainWindow)
+        self._ui.camerasMoreDialog.setWindowTitle("Select Camera")
+        self._ui.camerasMoreDialog.setMinimumSize(400, 500)
+        layout = QtWidgets.QVBoxLayout()
+
+        # Make camera list widget
+        self._ui.cameraList = QtWidgets.QListWidget()
+        for camera in self._allSceneCameras:
+            item = CameraItem(camera)
+            self._ui.cameraList.addItem(item)
+
+        self._ui.cameraList.currentItemChanged.connect(
+            lambda cam, _: self._cameraSelectionChanged(cam.camera))
+
+        # Make scroll widget
+        scrollArea = QtWidgets.QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollArea.setWidget(self._ui.cameraList)  
+        scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)  
+        layout.addWidget(scrollArea)
+
+        # Add search bar
+        searchBar = QtWidgets.QLineEdit()
+        searchBar.textChanged.connect(self._onCameraSearchTextChanged)
+        searchBar.editingFinished.connect(self._onCameraSearchComplete)
+        searchBar.setPlaceholderText("Search for camera by name")
+        layout.addWidget(searchBar)
+
+        # Add buttons
+        ok = QtWidgets.QPushButton("Ok")
+        ok.setAutoDefault(False)
+        ok.setDefault(False)
+        layout.addWidget(ok)
+        ok.clicked.connect(self._ui.camerasMoreDialog.accept)
+
+        self._ui.camerasMoreDialog.setLayout(layout)
+        self._ui.camerasMoreDialog.show()
+
+
+    def _onCameraSearchComplete(self):
+        for i in range(self._ui.cameraList.count()):
+            cam = self._ui.cameraList.item(i)
+            if not cam.isHidden():
+                self._ui.cameraList.setCurrentItem(cam)
+                break
+
+
+    def _onCameraSearchTextChanged(self, text):
+        text_lower = text.lower()
+        for i in range(self._ui.cameraList.count()):
+            cam = self._ui.cameraList.item(i)
+            if text_lower not in cam.text().lower():
+                cam.setHidden(True)
+            else:
+                cam.setHidden(False)
+        
 
     def _updatePropertiesFromPropertyView(self):
         """Update the data model's property selection to match property view's
@@ -3914,6 +3985,9 @@ class AppController(QtCore.QObject):
             treeWidget.topLevelItem(currRow).setData(PropertyViewIndex.TYPE,
                     QtCore.Qt.ItemDataRole.WhatsThisRole,
                     typeRole)
+            treeWidget.topLevelItem(currRow).setData(PropertyViewIndex.NAME,
+                PropertyViewDataRoles.NORMALIZED_NAME,
+                self._normalize_unicode(str(key)))
 
             currItem = treeWidget.topLevelItem(currRow)
 
@@ -3949,6 +4023,10 @@ class AppController(QtCore.QObject):
                             QtWidgets.QTreeWidgetItem(["", str(t), ""]))
                     currItem.setFont(PropertyViewIndex.VALUE, valTextFont)
                     child = currItem.child(childRow)
+
+                    child.setData(PropertyViewIndex.NAME,
+                        PropertyViewDataRoles.NORMALIZED_NAME,
+                        self._normalize_unicode(str(t)))
 
                     if typeRole == PropertyViewDataRoles.RELATIONSHIP_WITH_TARGETS:
                         child.setIcon(PropertyViewIndex.TYPE, 
@@ -5358,3 +5436,9 @@ class AppController(QtCore.QObject):
         from .rootDataModel import ChangeNotice
         self._updateForStageChanges(
             hasPrimResync=(primsChange==ChangeNotice.RESYNC))
+
+    def _updateAsyncTimer(self):
+        if not self._stageView:
+            return
+        if self._stageView.PollForAsynchronousUpdates():
+            self._usdviewApi.UpdateViewport()

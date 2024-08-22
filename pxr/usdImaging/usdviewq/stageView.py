@@ -1,25 +1,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 # pylint: disable=dict-keys-not-iterating
@@ -824,6 +807,22 @@ class StageView(QGLWidget):
     def rendererAovName(self):
         return self._rendererAovName
 
+    @property
+    def bboxstandin(self):
+        return self._bboxstandin
+
+    @bboxstandin.setter
+    def bboxstandin(self, value):
+        self._bboxstandin = bool(value)
+    
+    @property
+    def allowAsync(self):
+        return self._allowAsync
+
+    @allowAsync.setter
+    def allowAsync(self, value):
+        self._allowAsync = bool(value)
+
     def __init__(self, parent=None, dataModel=None, makeTimer=Timer):
         # Note: The default format *disables* the alpha component and so the
         # default backbuffer uses GL_RGB.
@@ -883,6 +882,9 @@ class StageView(QGLWidget):
         self._renderPauseState = False
         self._renderStopState = False
         self._reportedContextError = False
+
+        self._rendererSelectionNeedsUpdate = True
+
         self._renderModeDict = {
             RenderModes.WIREFRAME: UsdImagingGL.DrawMode.DRAW_WIREFRAME,
             RenderModes.WIREFRAME_ON_SURFACE: 
@@ -930,6 +932,9 @@ class StageView(QGLWidget):
         self._cameraGuidesVBO = None
         self._vao = 0
 
+        self._allowAsync = False
+        self._bboxstandin = False
+
         # Update all properties for the current stage.
         self._stageReplaced()
 
@@ -940,7 +945,10 @@ class StageView(QGLWidget):
         if not self._renderer:
             if self.context().isValid():
                 if self.isContextInitialised():
-                  self._renderer = UsdImagingGL.Engine()
+                  params = UsdImagingGL.Engine.Parameters()
+                  params.allowAsynchronousSceneProcessing = self._allowAsync
+                  params.displayUnloadedPrimsWithBounds = self._bboxstandin
+                  self._renderer = UsdImagingGL.Engine(params)
                   self._handleRendererChanged(self.GetCurrentRendererId())
             elif not self._reportedContextError:
                 self._reportedContextError = True
@@ -1354,6 +1362,14 @@ class StageView(QGLWidget):
         self.updateGL()
 
     def updateSelection(self):
+        self._rendererSelectionNeedsUpdate = True
+        self.update()
+
+    def _processSelection(self):
+        if not self._rendererSelectionNeedsUpdate:
+            return
+        self._rendererSelectionNeedsUpdate = False
+
         try:
             renderer = self._getRenderer()
             if not renderer:
@@ -1455,6 +1471,7 @@ class StageView(QGLWidget):
             self._dataModel.viewSettings.domeLightTexturesVisible)
 
         self._processBBoxes()
+        self._processSelection()
 
         try:
             renderer.Render(pseudoRoot, self._renderParams)
@@ -1685,6 +1702,9 @@ class StageView(QGLWidget):
             viewProjectionMatrix = Gf.Matrix4f(frustum.ComputeViewMatrix()
                                             * frustum.ComputeProjectionMatrix())
 
+            # Workaround an apparent bug in some recent versions of PySide6
+            GL.glDepthMask(GL.GL_TRUE)
+
             GL.glClear(GL.GL_COLOR_BUFFER_BIT|GL.GL_DEPTH_BUFFER_BIT)
 
             # ensure viewport is right for the camera framing
@@ -1707,6 +1727,7 @@ class StageView(QGLWidget):
                         l = Glf.SimpleLight()
                         l.ambient = (0, 0, 0, 0)
                         l.position = (cam_pos[0], cam_pos[1], cam_pos[2], 1)
+                        l.transform = frustum.ComputeViewInverse()
                         lights.append(l)
 
                     # Default Dome Light
@@ -2157,6 +2178,9 @@ class StageView(QGLWidget):
         # Need a correct OpenGL Rendering context for FBOs
         self.makeCurrent()
 
+        # Workaround an apparent bug in some recent versions of PySide6
+        GL.glDepthMask(GL.GL_TRUE)
+
         # update rendering parameters
         self._renderParams.frame = self._dataModel.currentFrame
         self._renderParams.complexity = self._dataModel.viewSettings.complexity.value
@@ -2360,3 +2384,12 @@ class StageView(QGLWidget):
         # set highlighted paths to renderer
         self.updateSelection()
         self.update()
+
+    def PollForAsynchronousUpdates(self):
+        if not self._allowAsync:
+            return False
+
+        if not self._renderer:
+            return False
+
+        return self._renderer.PollForAsynchronousUpdates()

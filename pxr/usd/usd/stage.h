@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_STAGE_H
 #define PXR_USD_USD_STAGE_H
@@ -51,8 +34,6 @@
 #include "pxr/base/vt/value.h"
 #include "pxr/base/work/dispatcher.h"
 
-#include <boost/optional.hpp>
-
 #include <tbb/concurrent_vector.h>
 #include <tbb/concurrent_unordered_set.h>
 #include <tbb/concurrent_hash_map.h>
@@ -61,6 +42,7 @@
 #include <functional>
 #include <string>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -678,8 +660,10 @@ public:
 
     /// Expand this stage's population mask to include the targets of all
     /// relationships that pass \p relPred and connections to all attributes
-    /// that pass \p attrPred recursively.  If \p relPred is null, include all
-    /// relationship targets; if \p attrPred is null, include all connections.
+    /// that pass \p attrPred recursively.  The attributes and relationships are
+    /// those on all the prims found by traversing the stage according to \p
+    /// traversalPredicate.  If \p relPred is null, include all relationship
+    /// targets; if \p attrPred is null, include all connections.
     ///
     /// This function can be used, for example, to expand a population mask for
     /// a given prim to include bound materials, if those bound materials are
@@ -689,9 +673,18 @@ public:
     /// UsdPrim::FindAllAttributeConnectionPaths().
     USD_API
     void ExpandPopulationMask(
+        Usd_PrimFlagsPredicate const &traversalPredicate,
         std::function<bool (UsdRelationship const &)> const &relPred = nullptr,
         std::function<bool (UsdAttribute const &)> const &attrPred = nullptr);
-    
+
+    /// \overload
+    /// This convenience overload invokes ExpandPopulationMask() with the
+    /// UsdPrimDefaultPredicate traversal predicate.
+    USD_API
+    void ExpandPopulationMask(
+        std::function<bool (UsdRelationship const &)> const &relPred = nullptr,
+        std::function<bool (UsdAttribute const &)> const &attrPred = nullptr);
+
     /// @}
 
     // --------------------------------------------------------------------- //
@@ -717,22 +710,27 @@ public:
     USD_API
     UsdPrim GetPseudoRoot() const;
 
-    /// Return the root UsdPrim on this stage whose name is the root layer's
+    /// Return the UsdPrim on this stage whose path is the root layer's
     /// defaultPrim metadata's value.  Return an invalid prim if there is no
     /// such prim or if the root layer's defaultPrim metadata is unset or is not
-    /// a valid prim name.  Note that this function only examines this stage's
-    /// rootLayer.  It does not consider sublayers of the rootLayer.  See also
-    /// SdfLayer::GetDefaultPrim().
+    /// a valid prim path.  Note that this function will return the prim on the 
+    /// stage whose path is the root layer's GetDefaultPrimAsPath() if that path
+    /// is not empty and a prim at that path exists on the stage. 
+    /// See also SdfLayer::GetDefaultPrimAsPath().
     USD_API
     UsdPrim GetDefaultPrim() const;
 
-    /// Set the default prim layer metadata in this stage's root layer.  This is
-    /// shorthand for:
+    /// Set the default prim layer metadata in this stage's root layer. This
+    /// is shorthand for:
     /// \code
     /// stage->GetRootLayer()->SetDefaultPrim(prim.GetName());
     /// \endcode
-    /// Note that this function always authors to the stage's root layer.  To
-    /// author to a different layer, use the SdfLayer::SetDefaultPrim() API.
+    /// If prim is a root prim, otherwise
+    /// \code
+    /// stage->GetRootLayer()->SetDefaultPrim(prim.GetPath().GetAsToken());
+    /// \endcode
+    /// Note that this function always authors to the stage's root layer.
+    /// To author to a different layer, use the SdfLayer::SetDefaultPrim() API.
     USD_API
     void SetDefaultPrim(const UsdPrim &prim);
     
@@ -858,6 +856,10 @@ public:
     ///
     /// If either a pre-and-post-order traversal or a traversal rooted at a
     /// particular prim is desired, construct a UsdPrimRange directly.
+    ///
+    /// You'll need to use the returned UsdPrimRange's iterator to perform 
+    /// actions such as pruning subtrees. See the "Using Usd.PrimRange in 
+    /// python" section in UsdPrimRange for more details and examples. 
     ///
     /// This is equivalent to UsdPrimRange::Stage() . 
     USD_API
@@ -1000,7 +1002,11 @@ public:
     std::string
     ResolveIdentifierToEditTarget(std::string const &identifier) const;
 
-    /// Return this stage's local layers in strong-to-weak order.  If
+    /// Return a PcpErrorVector containing all composition errors encountered 
+    /// when composing the prims and layer stacks on this stage.
+    USD_API
+    PcpErrorVector GetCompositionErrors() const;
+
     /// \a includeSessionLayers is true, return the linearized strong-to-weak
     /// sublayers rooted at the stage's session layer followed by the linearized
     /// strong-to-weak sublayers rooted at this stage's root layer.  If
@@ -1721,6 +1727,8 @@ private:
         static const bool value =
             std::is_same<T, SdfTimeCode>::value ||
             std::is_same<T, VtArray<SdfTimeCode>>::value ||
+            std::is_same<T, SdfPathExpression>::value ||
+            std::is_same<T, VtArray<SdfPathExpression>>::value ||
             std::is_same<T, SdfTimeSampleMap>::value ||
             std::is_same<T, VtDictionary>::value;
     };
@@ -1980,6 +1988,11 @@ private:
                                 SdfTimeCode *timeCodes,
                                 size_t numTimeCodes) const;
 
+    void _MakeResolvedPathExpressions(
+        UsdTimeCode time, const UsdAttribute &attr,
+        SdfPathExpression *pathExprs,
+        size_t numPathExprs) const;
+
     void _MakeResolvedAttributeValue(UsdTimeCode time, const UsdAttribute &attr,
                                      VtValue *value) const;
 
@@ -1999,6 +2012,8 @@ public:
             std::is_same<T, VtArray<SdfAssetPath>>::value ||
             std::is_same<T, SdfTimeCode>::value ||
             std::is_same<T, VtArray<SdfTimeCode>>::value ||
+            std::is_same<T, SdfPathExpression>::value ||
+            std::is_same<T, VtArray<SdfPathExpression>>::value ||
             std::is_same<T, SdfTimeSampleMap>::value ||
             std::is_same<T, VtDictionary>::value;
     };
@@ -2312,7 +2327,7 @@ private:
     class _PendingChanges;
     _PendingChanges* _pendingChanges;
 
-    boost::optional<WorkDispatcher> _dispatcher;
+    std::optional<WorkDispatcher> _dispatcher;
 
     // To provide useful aggregation of malloc stats, we bill everything
     // for this stage - from all access points - to this tag.

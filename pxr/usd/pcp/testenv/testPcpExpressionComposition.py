@@ -2,25 +2,8 @@
 #
 # Copyright 2023 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 import unittest
 
@@ -38,42 +21,30 @@ class TestPcpExpressionComposition(unittest.TestCase):
     def AssertVariables(self, pcpCache, path, expected, errorsExpected = False):
         '''Helper function for verifying the expected value of 
         expression variables in the layer stacks throughout the prim index
-        for the prim at the given path.
-
-        The "expected" parameter is a list that mirrors the tree
-        structure of the prim index:
-
-        expected  : [nodeEntry]
-        nodeEntry : (root layer id, expressionVars), [nodeEntry, ...]
-
-        The first entry in "expected" corresponds to the expected expression
-        variables dictionary in the root node, followed by a list of
-        entries corresponding to the children of the root node, etc.
+        for the prim at the given path. See Pcp._TestPrimIndex for more info.
 
         If "errorsExpected" is False, then this function will return false if
         any composition errors are generated when computing the prim index.
         '''
-        def _recurse(node, expected):
-            self.assertEqual(
-                node.layerStack.identifier.rootLayer,
-                Sdf.Layer.Find(expected[0][0]))
-
-            self.assertEqual(
-                node.layerStack.expressionVariables.GetVariables(),
-                expected[0][1],
-                "Unexpected expression variables for layer stack {}"
-                .format(node.layerStack.identifier))
-
-            for idx, n in enumerate(node.children):
-                _recurse(n, expected[1][(idx*2):(idx*2)+2])
-
         pi, err = pcpCache.ComputePrimIndex(path)
         if errorsExpected:
             self.assertTrue(err, "Composition errors expected")
         else:
             self.assertFalse(err, "Unexpected composition errors: {}".format(
                 ",".join(str(e) for e in err)))
-        _recurse(pi.rootNode, expected)
+
+        for node, entry in Pcp._TestPrimIndex(pi, expected):
+            expectedRootLayerId, expectedVariables = entry
+
+            self.assertEqual(
+                node.layerStack.identifier.rootLayer,
+                Sdf.Layer.Find(expectedRootLayerId))
+
+            self.assertEqual(
+                node.layerStack.expressionVariables.GetVariables(),
+                expectedVariables,
+                "Unexpected expression variables for layer stack {}"
+                .format(node.layerStack.identifier))
 
         return pi
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_TF_PY_ENUM_H
 #define PXR_BASE_TF_PY_ENUM_H
@@ -112,8 +95,8 @@ class Tf_PyEnumRegistry {
             // In the case of producing a TfEnum or an integer, any
             // registered enum type is fine.  In all other cases, the
             // enum types must match.
-            if (boost::is_same<T, TfEnum>::value ||
-                (boost::is_integral<T>::value && !boost::is_enum<T>::value))
+            if (std::is_same<T, TfEnum>::value ||
+                (std::is_integral<T>::value && !std::is_enum<T>::value))
                 return i != o2e.end() ? obj : 0;
             else
                 return (i != o2e.end() && i->second.IsA<T>()) ? obj : 0;
@@ -168,8 +151,7 @@ std::string Tf_PyEnumRepr(boost::python::object const &self);
 
 // Private base class for types which are instantiated and exposed to python
 // for each registered enum type.
-struct Tf_PyEnumWrapper
-    : public Tf_PyEnum, boost::totally_ordered<Tf_PyEnumWrapper>
+struct Tf_PyEnumWrapper : public Tf_PyEnum
 {
     typedef Tf_PyEnumWrapper This;
 
@@ -197,6 +179,11 @@ struct Tf_PyEnumWrapper
         return lhs.value == rhs.value;
     }
 
+    friend bool operator !=(Tf_PyEnumWrapper const &lhs,
+                            Tf_PyEnumWrapper const &rhs) {
+        return !(lhs == rhs);
+    }
+
     friend bool operator <(Tf_PyEnumWrapper const &lhs,
                            Tf_PyEnumWrapper const &rhs)
     {
@@ -210,7 +197,25 @@ struct Tf_PyEnumWrapper
         // If types do match, numerically compare values.
         return lhs.GetValue() < rhs.GetValue();
     }
-    
+
+    friend bool operator >(Tf_PyEnumWrapper const& lhs,
+                           Tf_PyEnumWrapper const& rhs)
+    {
+        return rhs < lhs;
+    }
+
+    friend bool operator <=(Tf_PyEnumWrapper const& lhs,
+                            Tf_PyEnumWrapper const& rhs)
+    {
+        return !(lhs > rhs);
+    }
+
+    friend bool operator >=(Tf_PyEnumWrapper const& lhs,
+                            Tf_PyEnumWrapper const& rhs)
+    {
+        return !(lhs < rhs);
+    }
+
     //
     // XXX Bitwise operators for Enums are a temporary measure to support the
     // use of Enums as Bitmasks in libSd.  It should be noted that Enums are

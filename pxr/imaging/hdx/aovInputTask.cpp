@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/aovInputTask.h"
 #include "pxr/imaging/hdx/hgiConversions.h"
@@ -55,6 +38,9 @@ HdxAovInputTask::~HdxAovInputTask()
     }
     if (_depthTexture) {
         _GetHgi()->DestroyTexture(&_depthTexture);
+    }
+    if (_depthTextureIntermediate) {
+        _GetHgi()->DestroyTexture(&_depthTextureIntermediate);
     }
 }
 
@@ -203,6 +189,35 @@ HdxAovInputTask::Execute(HdTaskContext* ctx)
     }
 }
 
+namespace {
+void
+_ConvertRGBtoRGBA(const float* rgbValues,
+                  size_t numRgbValues,
+                  std::vector<float>* rgbaValues)
+{
+    if (numRgbValues % 3 != 0) {
+        TF_WARN("Value count should be divisible by 3.");
+        return;
+    }
+
+    const size_t numRgbaValues = numRgbValues * 4 / 3;
+
+    if (rgbValues != nullptr && rgbaValues != nullptr) {
+        const float *rgbValuesIt = rgbValues;
+        rgbaValues->resize(numRgbaValues);
+        float *rgbaValuesIt = rgbaValues->data();
+        const float * const end = rgbaValuesIt + numRgbaValues;
+
+        while (rgbaValuesIt != end) {
+            *rgbaValuesIt++ = *rgbValuesIt++;
+            *rgbaValuesIt++ = *rgbValuesIt++;
+            *rgbaValuesIt++ = *rgbValuesIt++;
+            *rgbaValuesIt++ = 1.0f;
+        }
+    }
+}
+} // anonymous namespace
+
 void
 HdxAovInputTask::_UpdateTexture(
     HdTaskContext* ctx,
@@ -213,21 +228,34 @@ HdxAovInputTask::_UpdateTexture(
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
 
-    GfVec3i dim(
+    const GfVec3i dim(
         buffer->GetWidth(),
         buffer->GetHeight(),
         buffer->GetDepth());
 
-    HgiFormat bufFormat = HdxHgiConversions::GetHgiFormat(buffer->GetFormat());
-    size_t pixelByteSize = HdDataSizeOfFormat(buffer->GetFormat());
-    size_t dataByteSize = dim[0] * dim[1] * dim[2] * pixelByteSize;
+    const void* pixelData = buffer->Map();
+
+    HdFormat hdFormat = buffer->GetFormat();
+    // HgiFormatFloat32Vec3 not a supported texture format for Vulkan. Convert
+    // data to vec4 format.
+    if (hdFormat == HdFormatFloat32Vec3) {
+        hdFormat = HdFormatFloat32Vec4;
+        const size_t numValues = 3 * dim[0] * dim[1] * dim[2];
+        std::vector<float> float4Data;
+        _ConvertRGBtoRGBA(
+            reinterpret_cast<const float*>(pixelData), numValues, &float4Data);
+        pixelData = reinterpret_cast<const void*>(float4Data.data());
+    }
+
+    const HgiFormat bufFormat = HdxHgiConversions::GetHgiFormat(hdFormat);
+    const size_t pixelByteSize = HdDataSizeOfFormat(hdFormat);
+    const size_t dataByteSize = dim[0] * dim[1] * dim[2] * pixelByteSize;
 
     // Update the existing texture if specs are compatible. This is more
     // efficient than re-creating, because the underlying framebuffer that
     // had the old texture attached would also need to be re-created.
     if (texture && texture->GetDescriptor().dimensions == dim &&
             texture->GetDescriptor().format == bufFormat) {
-        const void* pixelData = buffer->Map();
         HgiTextureCpuToGpuOp copyOp;
         copyOp.bufferByteSize = dataByteSize;
         copyOp.cpuSourceBuffer = pixelData;
@@ -237,7 +265,6 @@ HdxAovInputTask::_UpdateTexture(
         blitCmds->CopyTextureCpuToGpu(copyOp);
         blitCmds->PopDebugGroup();
         _GetHgi()->SubmitCmds(blitCmds.get());
-        buffer->Unmap();
     } else {
         // Destroy old texture
         if(texture) {
@@ -247,9 +274,6 @@ HdxAovInputTask::_UpdateTexture(
         HgiTextureDesc texDesc;
         texDesc.debugName = "AovInput Texture";
         texDesc.dimensions = dim;
-
-        const void* pixelData = buffer->Map();
-
         texDesc.format = bufFormat;
         texDesc.initialData = pixelData;
         texDesc.layerCount = 1;
@@ -259,9 +283,8 @@ HdxAovInputTask::_UpdateTexture(
         texDesc.usage = usage | HgiTextureUsageBitsShaderRead;
 
         texture = _GetHgi()->CreateTexture(texDesc);
-
-        buffer->Unmap();
     }
+    buffer->Unmap();
 }
 
 void
@@ -270,12 +293,20 @@ HdxAovInputTask::_UpdateIntermediateTexture(
     HdRenderBuffer* buffer,
     HgiTextureUsageBits usage)
 {
-    GfVec3i dim(
+    const GfVec3i dim(
         buffer->GetWidth(),
         buffer->GetHeight(),
         buffer->GetDepth());
+    
+    // HgiFormatFloat32Vec3 not a supported texture format for Vulkan. Use vec4 
+    // format instead.
+    HdFormat hdFormat = buffer->GetFormat();
+    if (hdFormat == HdFormatFloat32Vec3) {
+        hdFormat = HdFormatFloat32Vec4;
+    }
+
     HgiFormat hgiFormat =
-        HdxHgiConversions::GetHgiFormat(buffer->GetFormat());
+        HdxHgiConversions::GetHgiFormat(hdFormat);
 
     if (texture) {
         HgiTextureDesc const& desc =
