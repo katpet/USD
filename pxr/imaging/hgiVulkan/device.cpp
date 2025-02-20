@@ -18,12 +18,16 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+TF_DEFINE_ENV_SETTING(HGIVULKAN_PREFERRED_DEVICE_TYPE,
+    VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+    "Preferred device type. Use VkPhysicalDeviceType enum values.");
 
 static uint32_t
 _GetGraphicsQueueFamilyIndex(VkPhysicalDevice physicalDevice)
 {
     uint32_t queueCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, 0);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount,
+        nullptr);
 
     std::vector<VkQueueFamilyProperties> queues(queueCount);
     vkGetPhysicalDeviceQueueFamilyProperties(
@@ -69,6 +73,7 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     , _vmaAllocator(nullptr)
     , _commandQueue(nullptr)
     , _capabilities(nullptr)
+    , _pipelineCache(nullptr)
 {
     //
     // Determine physical device
@@ -77,13 +82,15 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     const uint32_t maxDevices = 64;
     VkPhysicalDevice physicalDevices[maxDevices];
     uint32_t physicalDeviceCount = maxDevices;
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumeratePhysicalDevices(
             instance->GetVulkanInstance(),
             &physicalDeviceCount,
-            physicalDevices) == VK_SUCCESS
+            physicalDevices)
     );
 
+    const auto preferredDeviceType = static_cast<VkPhysicalDeviceType>(
+        TfGetEnvSetting(HGIVULKAN_PREFERRED_DEVICE_TYPE));
     for (uint32_t i = 0; i < physicalDeviceCount; i++) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physicalDevices[i], &props);
@@ -94,20 +101,22 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
         if (familyIndex == VK_QUEUE_FAMILY_IGNORED) continue;
 
         // Assume we always want a presentation capable device for now.
-        if (!_SupportsPresentation(physicalDevices[i], familyIndex)) {
+        if (instance->HasPresentation() &&
+            !_SupportsPresentation(physicalDevices[i], familyIndex)) {
             continue;
         }
 
         if (props.apiVersion < VK_API_VERSION_1_0) continue;
 
-        // Try to find a discrete device. Until we find a discrete device,
-        // store the first non-discrete device as fallback in case we never
-        // find a discrete device at all.
-        if (props.deviceType==VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+        // Try to find a preferred device type. Until we find one, store the
+        // first non-preferred device as fallback in case we never find a
+        // preferred device at all.
+        if (props.deviceType == preferredDeviceType) {
             _vkPhysicalDevice = physicalDevices[i];
             _vkGfxsQueueFamilyIndex = familyIndex;
             break;
-        } else if (!_vkPhysicalDevice) {
+        }
+        if (!_vkPhysicalDevice) {
             _vkPhysicalDevice = physicalDevices[i];
             _vkGfxsQueueFamilyIndex = familyIndex;
         }
@@ -123,22 +132,22 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     //
 
     uint32_t extensionCount = 0;
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumerateDeviceExtensionProperties(
             _vkPhysicalDevice,
             nullptr,
             &extensionCount,
-            nullptr) == VK_SUCCESS
+            nullptr)
     );
 
     _vkExtensions.resize(extensionCount);
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumerateDeviceExtensionProperties(
             _vkPhysicalDevice,
             nullptr,
             &extensionCount,
-            _vkExtensions.data()) == VK_SUCCESS
+            _vkExtensions.data())
     );
 
     //
@@ -282,12 +291,12 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     createInfo.enabledExtensionCount = (uint32_t) extensions.size();
     createInfo.pNext = &features;
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkCreateDevice(
             _vkPhysicalDevice,
             &createInfo,
             HgiVulkanAllocator(),
-            &_vkDevice) == VK_SUCCESS
+            &_vkDevice)
     );
 
     HgiVulkanSetupDeviceDebug(instance, this);
@@ -315,8 +324,8 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }
 
-    TF_VERIFY(
-        vmaCreateAllocator(&allocatorInfo, &_vmaAllocator) == VK_SUCCESS
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vmaCreateAllocator(&allocatorInfo, &_vmaAllocator)
     );
 
     //
@@ -334,8 +343,12 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
 
 HgiVulkanDevice::~HgiVulkanDevice()
 {
-    // Make sure device is idle before destroying objects.
-    TF_VERIFY(vkDeviceWaitIdle(_vkDevice) == VK_SUCCESS);
+    if (_vkDevice) {
+        // Make sure device is idle before destroying objects.
+        HGIVULKAN_VERIFY_VK_RESULT(
+            vkDeviceWaitIdle(_vkDevice)
+        );
+    }
 
     delete _pipelineCache;
     delete _commandQueue;
@@ -389,8 +402,8 @@ HgiVulkanDevice::GetPipelineCache() const
 void
 HgiVulkanDevice::WaitForIdle()
 {
-    TF_VERIFY(
-        vkDeviceWaitIdle(_vkDevice) == VK_SUCCESS
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vkDeviceWaitIdle(_vkDevice)
     );
 }
 

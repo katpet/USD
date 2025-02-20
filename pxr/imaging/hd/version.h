@@ -97,8 +97,13 @@
 //           startTime and endTime
 // 73 -> 74: Extended HdMeshReprDesc to support optional generation of
 //           surface edge ids.
+// 74 -> 75: Added overload of HdSceneIndexPlugin::_AppendSceneIndex that
+//           passes the renderInstanceId to the plugin callback.
+// 75 -> 76: Added Scene State ID tunneling through the Hydra pipeline and
+//           arbitrary values Setter/Getter to HdRenderParam.
 
-#define HD_API_VERSION 74
+
+#define HD_API_VERSION 76
 
 // 1  ->  2: SimpleLighting -> FallbackLighting
 #define HD_SHADER_API 2

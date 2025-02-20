@@ -4,15 +4,11 @@ set(PXR_PACKAGE usdShaders)
 pxr_plugin(usdShaders
     LIBRARIES
         ar
-        ndr
         sdr
         usdShade
 
     PRIVATE_CLASSES
         discoveryPlugin
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
 
     PYMODULE_FILES
         __init__.py

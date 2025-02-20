@@ -231,7 +231,8 @@ PXR_NAMESPACE_OPEN_SCOPE
     (worldToViewMatrix)                         \
     (worldToViewInverseMatrix)                  \
     (stepSize)                                  \
-    (stepSizeLighting)
+    (stepSizeLighting)                          \
+    (multisampleCount)
 
 // Deprecated. Use: HdStMaterialTagTokens
 #define HD_MATERIALTAG_TOKENS                   \
@@ -327,7 +328,8 @@ PXR_NAMESPACE_OPEN_SCOPE
     HD_SPRIMTYPE_TOKENS                         \
     HD_BPRIMTYPE_TOKENS                         \
     /* Scene-index-only prim types */           \
-    (renderPass)
+    (renderPass)                                \
+    (task)
 
 HD_API
 bool HdPrimTypeIsGprim(TfToken const& primType);

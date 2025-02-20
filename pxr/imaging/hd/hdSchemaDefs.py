@@ -269,6 +269,11 @@
             ('indices', T_INTARRAY, {}),
             ('interpolation', T_TOKEN, {}),
             ('role', T_TOKEN, {}),
+            ('elementSize', T_INT,
+             dict(DOC = '''
+                 The number of values in the value array that must be aggregated
+                 for each element on the the primitive
+                 (same as UsdGeomPrimvar).'''))
         ],
         EXTRA_TOKENS = [
             'transform',
@@ -389,14 +394,14 @@
             ''',
         SCHEMA_INCLUDES = ['{{LIBRARY_PATH}}/schemaTypeDefs'],
         MEMBERS = [
-            ('parameters', 'HdMaterialNodeParameterContainerSchema', 
+            ('parameters', 'HdMaterialNodeParameterContainerSchema',
              dict(DOC = '''
                 Maps parameter names to node parameters. Each node parameter
                 is a container that is defined by the MaterialNodeParameter
                 schema. Note that parameters are inputs that supply their value 
                 directly.
                 ''')),
-            ('inputConnections', 'HdMaterialConnectionVectorContainerSchema', 
+            ('inputConnections', 'HdMaterialConnectionVectorContainerSchema',
              dict(DOC = '''
                 Maps input names to vectors of connections. Each connection is
                 defined by the MaterialConnection schema. Note that 
@@ -441,6 +446,7 @@
             ('value', T_SAMPLED, {}),
             # Parameter Metadata
             ('colorSpace', T_TOKEN, {}),
+            ('typeName', T_TOKEN, {})
         ],
     ),
 
@@ -516,24 +522,25 @@
             ''',
         SCHEMA_INCLUDES = ['{{LIBRARY_PATH}}/schemaTypeDefs'],
         MEMBERS = [
-            ('nodes', 'HdMaterialNodeContainerSchema', 
+            ('nodes', 'HdMaterialNodeContainerSchema',
              dict(DOC = '''
                 Maps node names to material nodes. Each material node is a
                 container that is defined by the MaterialNode schema. The
                 topology of the network is expressed by the connections found on
                 each material node.
                 ''')),
-            ('terminals', 'HdMaterialConnectionContainerSchema', 
+            ('terminals', 'HdMaterialConnectionContainerSchema',
              dict(DOC = '''
                 Maps terminal names to material connections. Each connection
                 is a container defined by the MaterialConnection schema.
                 ''')),
-            ('interfaceMappings', 'HdMaterialInterfaceMappingsContainerSchema', 
+            ('interfaceMappings', 'HdMaterialInterfaceMappingsContainerSchema',
              dict(DOC = '''
                 Maps interface names (public UI names) to vectors of material 
                 node parameters. Each mapped material node parameter is a 
                 container defined by the InterfaceMappings schema.
                 ''')),
+            ('config', "HdSampledDataSourceContainerSchema", {}),
         ],
     ),
 
@@ -557,6 +564,7 @@
         SCHEMA_TOKEN = 'material',
         EXTRA_TOKENS = [
             '(universalRenderContext, "")',
+            '(all, "__all")',
         ],
         ADD_DEFAULT_LOCATOR = True,
 
@@ -622,9 +630,9 @@
         SCHEMA_TOKEN = 'materialOverride',
         SCHEMA_INCLUDES = ['{{LIBRARY_PATH}}/schemaTypeDefs'],
         ADD_DEFAULT_LOCATOR = True,
-        
+
         MEMBERS = [
-            ('interfaceValues', 'HdMaterialNodeParameterContainerSchema', 
+            ('interfaceValues', 'HdMaterialNodeParameterContainerSchema',
              dict(DOC = '''
                 Maps interface names (ie. public UI names) to overriding
                 data sources that follow the MaterialNodeParameter schema.
@@ -819,6 +827,7 @@
         SCHEMA_TOKEN = 'displayStyle',
         ADD_DEFAULT_LOCATOR = True,
         MEMBERS = [
+            ('ALL_MEMBERS', '', dict(ADD_LOCATOR = True)),
             ('refineLevel', T_INT, {}),
             ('flatShadingEnabled', T_BOOL, {}),
             ('displacementEnabled', T_BOOL, {}),
@@ -826,10 +835,8 @@
             ('pointsShadingEnabled', T_BOOL, {}),
             ('materialIsFinal', T_BOOL, {}),
             ('shadingStyle', T_TOKEN, {}),
-            ('reprSelector', T_TOKENARRAY,
-             dict(ADD_LOCATOR = True)),
-            ('cullStyle', T_TOKEN,
-             dict(ADD_LOCATOR = True)),
+            ('reprSelector', T_TOKENARRAY, {}),
+            ('cullStyle', T_TOKEN, {}),
         ],
     ),
 
@@ -866,6 +873,7 @@
         SCHEMA_NAME = 'RenderBuffer',
         SCHEMA_TOKEN = 'renderBuffer',
         MEMBERS = [
+            ('ALL_MEMBERS', '', dict(ADD_LOCATOR = True)),
             ('dimensions', T_VEC3I, {}),
             ('format', T_FORMAT, {}),
             ('multiSampled', T_BOOL, {}),
@@ -1046,7 +1054,12 @@
             ('focusDistance', T_FLOAT, {}),
             ('shutterOpen', T_DOUBLE, dict(ADD_LOCATOR = True)),
             ('shutterClose', T_DOUBLE, dict(ADD_LOCATOR = True)),
-            ('exposure', T_FLOAT, {}),
+            ('exposure', T_FLOAT, dict(ADD_LOCATOR = True)),
+            ('exposureTime', T_FLOAT, dict(ADD_LOCATOR = True)),
+            ('exposureIso', T_FLOAT, dict(ADD_LOCATOR = True)),
+            ('exposureFStop', T_FLOAT, dict(ADD_LOCATOR = True)),
+            ('exposureResponsivity', T_FLOAT, dict(ADD_LOCATOR = True)),
+            ('linearExposureScale', T_FLOAT, dict(ADD_LOCATOR = True)),
             ('focusOn', T_BOOL, {}),
             ('dofAspect', T_FLOAT, {}),
             ('splitDiopter', 'HdSplitDiopterSchema', {}),
@@ -1264,7 +1277,7 @@
         ],
 
     ),
-    
+
     #--------------------------------------------------------------------------
     # plane
     dict(
@@ -1347,6 +1360,7 @@
             ('startTimeCode', T_DOUBLE, {}),
             ('endTimeCode', T_DOUBLE, {}),
             ('currentFrame', T_DOUBLE, {}),
+            ('sceneStateId', T_INT, {}),
         ],
     ),
 
@@ -1382,5 +1396,25 @@
         ],
         ADD_DEFAULT_LOCATOR = True,
     ),
+
     #--------------------------------------------------------------------------
+    # legacyTask
+    dict(
+        SCHEMA_NAME = 'LegacyTask',
+        DOC = '''The {{ SCHEMA_CLASS_NAME }} specifies a Hydra task by providing
+                 a task factory and data.''',
+        SCHEMA_TOKEN = 'task',
+        ADD_DEFAULT_LOCATOR = True,
+        MEMBERS = [
+            ('ALL_MEMBERS', '', dict(ADD_LOCATOR = True)),
+            ('factory', 'HdLegacyTaskFactoryDataSource', {}),
+            ('parameters', T_SAMPLED,
+             dict(DOC = '''
+                Parameters for task. Type depends on task type.
+                E.g. HdxRenderTaskParams if the factory produces HdxRenderTask
+                instances.''')),
+            ('collection', 'HdRprimCollectionDataSource', {}),
+            ('renderTags', 'HdTokenVectorDataSource', {}),
+        ],
+    ),
 ]

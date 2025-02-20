@@ -35,6 +35,11 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+#if PXR_VERSION < 2505
+using SdrTokenVec = NdrTokenVec;
+using SdrOptionVec = NdrOptionVec;
+#endif
+
 TF_DEFINE_ENV_SETTING(HD_PRMAN_MATERIALID, true,
                       "Enable __materialid as hash of material network");
 static bool _enableMaterialID =
@@ -61,7 +66,7 @@ TF_DEFINE_ENV_SETTING(HD_PRMAN_TEX_EXTS, "tex:dds",
                       "that do not require txmake processing."
                       "eg. tex:dds:tx");
 
-TF_MAKE_STATIC_DATA(NdrTokenVec, _sourceTypesOslFirst) {
+TF_MAKE_STATIC_DATA(SdrTokenVec, _sourceTypesOslFirst) {
     *_sourceTypesOslFirst = {
         TfToken("OSL"),
         TfToken("RmanCpp"),
@@ -70,7 +75,7 @@ TF_MAKE_STATIC_DATA(NdrTokenVec, _sourceTypesOslFirst) {
 #endif
     };}
 
-TF_MAKE_STATIC_DATA(NdrTokenVec, _sourceTypesCppFirst) {
+TF_MAKE_STATIC_DATA(SdrTokenVec, _sourceTypesCppFirst) {
     *_sourceTypesCppFirst = {
         TfToken("RmanCpp"),
         TfToken("OSL"),
@@ -131,7 +136,7 @@ struct _HashMaterial {
     }
 };
 
-TF_MAKE_STATIC_DATA(NdrTokenVec, _texExts) {
+TF_MAKE_STATIC_DATA(SdrTokenVec, _texExts) {
     *_texExts = TfToTokenVector(TfStringSplit(
         TfGetEnvSetting(HD_PRMAN_TEX_EXTS), ":"));
     }
@@ -237,7 +242,7 @@ _ConvertToVec3fArray(const VtArray<GfVec3d>& v)
 
 static int
 _ConvertOptionTokenToInt(
-    const TfToken &option, const NdrOptionVec &options, bool *ok)
+    const TfToken &option, const SdrOptionVec &options, bool *ok)
 {
     for (const auto &tokenPair : options) {
         if (tokenPair.first == option) {
@@ -283,6 +288,7 @@ _IsWriteAsset(const TfToken& nodeName, const RtUString& paramName)
 // of multi-path dependencies.
 static bool
 _ConvertNodes(
+    SdfPath const& id,
     HdMaterialNetwork2 const& network,
     SdfPath const& nodePath,
     std::vector<riley::ShadingNode> *result,
@@ -301,7 +307,8 @@ _ConvertNodes(
     auto iter = network.nodes.find(nodePath);
     if (iter == network.nodes.end()) {
         // This could be caused by a bad connection to a non-existent node.
-        TF_WARN("Unknown material node '%s'", nodePath.GetText());
+        TF_WARN("Unknown material node '%s' in <%s>", nodePath.GetText(),
+            id.GetText());
         return false;
     }
     HdMaterialNode2 const& node = iter->second;
@@ -311,7 +318,7 @@ _ConvertNodes(
         for (auto const& e: connEntry.second) {
             // This method will just return if we've visited this upstream node
             // before
-            _ConvertNodes(network, e.upstreamNode, result, visitedNodes,
+            _ConvertNodes(id, network, e.upstreamNode, result, visitedNodes,
                           elideDefaults);
         }
     }
@@ -337,8 +344,8 @@ _ConvertNodes(
             sdrRegistry.GetShaderNodeByIdentifier(node.nodeTypeId,
                                                   _GetShaderSourceTypes());
     if (!sdrEntry) {
-        TF_WARN("Unknown shader ID %s for node <%s>\n",
-                node.nodeTypeId.GetText(), nodePath.GetText());
+        TF_WARN("Unknown shader ID %s for node <%s> in <%s>\n",
+                node.nodeTypeId.GetText(), nodePath.GetText(), id.GetText());
         return false;
     }
     // Create equivalent Riley shading node.
@@ -373,15 +380,16 @@ _ConvertNodes(
     } else if (sdrEntry->GetContext() == SdrNodeContext->LightFilter) {
         sn.type = riley::ShadingNode::Type::k_LightFilter;
     } else {
-        TF_WARN("Unknown shader entry type '%s' for shader '%s'",
-                sdrEntry->GetContext().GetText(), sdrEntry->GetName().c_str());
+        TF_WARN("Unknown shader entry type '%s' for shader '%s' in <%s>",
+                sdrEntry->GetContext().GetText(), sdrEntry->GetName().c_str(),
+                id.GetText());
         return false;
     }
     sn.handle = RtUString(nodePath.GetText());
     std::string shaderPath = sdrEntry->GetResolvedImplementationURI();
     if (shaderPath.empty()){
-        TF_WARN("Shader '%s' did not provide a valid implementation path.",
-                sdrEntry->GetName().c_str());
+        TF_WARN("Shader '%s' did not provide a valid implementation "
+                "path in <%s>.", sdrEntry->GetName().c_str(), id.GetText());
         return false;
     }
     if (sn.type == riley::ShadingNode::Type::k_Displacement ||
@@ -402,10 +410,11 @@ _ConvertNodes(
         if (!prop) {
             TF_DEBUG(HDPRMAN_MATERIALS)
                 .Msg("Unknown shader property '%s' for "
-                     "shader '%s' at '%s'; ignoring.\n",
+                     "shader '%s' at '%s' in <%s>; ignoring.\n",
                      param.first.GetText(),
                      sdrEntry->GetName().c_str(),
-                     nodePath.GetText());
+                     nodePath.GetText(),
+                     id.GetText());
             continue;
         }
         // Skip parameter values that match schema-defined defaults
@@ -431,10 +440,11 @@ _ConvertNodes(
             }
             TF_DEBUG(HDPRMAN_MATERIALS)
                 .Msg("Unknown shader entry field type for "
-                     "field '%s' on shader '%s' at '%s'; ignoring.\n",
+                     "field '%s' on shader '%s' at '%s' in <%s>; ignoring.\n",
                      param.first.GetText(),
                      sdrEntry->GetName().c_str(),
-                     nodePath.GetText());
+                     nodePath.GetText(),
+                     id.GetText());
             continue;
         }
 
@@ -650,11 +660,12 @@ _ConvertNodes(
         if (!ok) {
             TF_DEBUG(HDPRMAN_MATERIALS)
                 .Msg("Unknown shading parameter type '%s'; skipping "
-                     "parameter '%s' on node '%s'; "
+                     "parameter '%s' on node '%s' in <%s>; "
                      "expected type '%s'\n",
                      param.second.GetTypeName().c_str(),
                      param.first.GetText(),
                      nodePath.GetText(),
+                     id.GetText(),
                      propType.GetText());
         }
     }
@@ -665,7 +676,8 @@ _ConvertNodes(
         SdrShaderPropertyConstPtr downstreamProp =
             sdrEntry->GetShaderInput(connEntry.first);
         if (!downstreamProp) {
-            TF_WARN("Unknown downstream property %s", connEntry.first.data());
+            TF_WARN("Unknown downstream property %s in <%s>",
+                    connEntry.first.data(), id.GetText());
             continue;
         }
         RtUString name(downstreamProp->GetImplementationName().c_str());
@@ -680,7 +692,8 @@ _ConvertNodes(
             HdMaterialNode2 const* upstreamNode =
                 TfMapLookupPtr(network.nodes, e.upstreamNode);
             if (!upstreamNode) {
-                TF_WARN("Unknown upstream node %s", e.upstreamNode.GetText());
+                TF_WARN("Unknown upstream node %s in <%s>",
+                    e.upstreamNode.GetText(), id.GetText());
                 continue;
             }
             // Ignore nodes of id "PrimvarPass". This node is a workaround for 
@@ -693,8 +706,8 @@ _ConvertNodes(
                 sdrRegistry.GetShaderNodeByIdentifier(
                     upstreamNode->nodeTypeId, _GetShaderSourceTypes());
             if (!upstreamSdrEntry) {
-                TF_WARN("Unknown shader for upstream node %s",
-                        e.upstreamNode.GetText());
+                TF_WARN("Unknown shader for upstream node %s in <%s>",
+                        e.upstreamNode.GetText(), id.GetText());
                 continue;
             }
             SdrShaderPropertyConstPtr upstreamProp =
@@ -702,8 +715,8 @@ _ConvertNodes(
             // In the case of terminals there is no upstream output name
             // since the whole node is referenced as a whole
             if (!upstreamProp && propType != SdrPropertyTypes->Terminal) {
-                TF_WARN("Unknown upstream property %s",
-                        e.upstreamOutputName.data());
+                TF_WARN("Unknown upstream property %s in <%s>",
+                        e.upstreamOutputName.data(), id.GetText());
                 continue;
             }
             // Prman syntax for parameter references is "handle:param".
@@ -776,10 +789,11 @@ _ConvertNodes(
                     sn.params.SetStructReference(name, inputRefs[0]);
                 } else {
                      TF_WARN("Unsupported type struct array for property '%s' "
-                        "on shader '%s' at '%s'; ignoring.",
+                        "on shader '%s' at '%s' in <%s>; ignoring.",
                         connEntry.first.data(),
                         sdrEntry->GetName().c_str(),
-                        nodePath.GetText());
+                        nodePath.GetText(),
+                        id.GetText());
                 }
             } else if (propType == SdrPropertyTypes->Terminal) {
                 if (numInputRefs == 1) {
@@ -797,11 +811,12 @@ _ConvertNodes(
                 }
             } else {
                 TF_WARN("Unknown type '%s' for property '%s' "
-                        "on shader '%s' at %s; ignoring.",
+                        "on shader '%s' at %s in <%s>; ignoring.",
                         propType.GetText(),
                         connEntry.first.data(),
                         sdrEntry->GetName().c_str(),
-                        nodePath.GetText());
+                        nodePath.GetText(),
+                        id.GetText());
             }
         }
     }
@@ -813,6 +828,7 @@ _ConvertNodes(
     
 bool
 HdPrman_ConvertHdMaterialNetwork2ToRmanNodes(
+    SdfPath const& id,
     HdMaterialNetwork2 const& network,
     SdfPath const& nodePath,
     std::vector<riley::ShadingNode> *result)
@@ -824,7 +840,7 @@ HdPrman_ConvertHdMaterialNetwork2ToRmanNodes(
 
     _PathSet visitedNodes;
     return _ConvertNodes(
-        network, nodePath, result, &visitedNodes, elideDefaults);
+        id, network, nodePath, result, &visitedNodes, elideDefaults);
 }
     
 // Debug helper
@@ -878,7 +894,7 @@ _ConvertHdMaterialNetwork2ToRman(
 
     for (auto const& terminal: network.terminals) {
         if (HdPrman_ConvertHdMaterialNetwork2ToRmanNodes(
-                network, terminal.second.upstreamNode, &nodes)) {
+                id, network, terminal.second.upstreamNode, &nodes)) {
             if (nodes.empty()) {
                 // Already emitted a specific warning.
                 continue;

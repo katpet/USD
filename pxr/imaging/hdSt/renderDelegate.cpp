@@ -312,16 +312,16 @@ HdStRenderDelegate::GetDefaultAovDescriptor(TfToken const& name) const
     if (name == HdAovTokens->color) {
         return HdAovDescriptor(
                 HdFormatFloat16Vec4, colorDepthMSAA, VtValue(GfVec4f(0)));
+    } else if (HdAovHasDepthStencilSemantic(name)) {
+        return HdAovDescriptor(
+            HdFormatFloat32UInt8, colorDepthMSAA,
+            VtValue(HdDepthStencilType(1.0f, 0)));
     } else if (HdAovHasDepthSemantic(name)) {
         return HdAovDescriptor(
                 HdFormatFloat32, colorDepthMSAA, VtValue(1.0f));
-    } else if (HdAovHasDepthStencilSemantic(name)) {
-        return HdAovDescriptor(
-                HdFormatFloat32UInt8, colorDepthMSAA,
-                VtValue(HdDepthStencilType(1.0f, 0)));
     } else if (_AovHasIdSemantic(name)) {
         return HdAovDescriptor(
-                HdFormatUNorm8Vec4, colorDepthMSAA, VtValue(GfVec4f(0)));
+                HdFormatInt32, colorDepthMSAA, VtValue(-1));
     } else if (name == HdAovTokens->Neye) {
         return HdAovDescriptor(
                 HdFormatUNorm8Vec4, colorDepthMSAA, VtValue(GfVec4f(0)));

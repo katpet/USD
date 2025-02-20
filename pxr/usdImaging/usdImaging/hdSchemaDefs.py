@@ -17,11 +17,18 @@
         SCHEMA_TOKEN = '__usdPrimInfo',
         ADD_DEFAULT_LOCATOR = True,
         MEMBERS = [
+            ('specifier', T_TOKEN, {}),
+            ('typeName', T_TOKEN, {}),
+            ('isLoaded', T_BOOL, {}),
+            # Skipping isModel and isGroup, which can be inferred from 'kind'.
+            ('apiSchemas', T_TOKENARRAY, {}),
+            ('kind', T_TOKEN, {}),
+            # XXX Add variantSets. Is it a token array, or a container of token
+            #     to token array?
             ('niPrototypePath', T_PATH, dict(ADD_LOCATOR=True)),
             ('isNiPrototype', T_BOOL, {}),
-            ('specifier', T_TOKEN, {}),
             ('piPropagatedPrototypes', T_CONTAINER, {}),
-            ('isLoaded', T_BOOL, {}),
+
         ],
         STATIC_TOKEN_DATASOURCE_BUILDERS = [
             ('specifier', ['def', 'over', '(class_, "class")']),
@@ -83,6 +90,7 @@
         MEMBERS = [
             ('materialPath', T_PATH, {}),
             ('bindingStrength', T_TOKEN, {}),
+            ('bindingOriginPath', T_PATH, {})
         ],
     ),
 
@@ -108,6 +116,7 @@
             ('collectionPath', T_PATH, {}),
             ('materialPath', T_PATH, {}),
             ('bindingStrength', T_TOKEN, {}),
+            ('bindingOriginPath', T_PATH, {})
         ],
     ),
 
@@ -123,7 +132,7 @@
     ),
 
     #--------------------------------------------------------------------------
-    # usdImaging/usdImagingRenderSettings
+    # usdImaging/usdRenderSettings
     dict(
         SCHEMA_NAME = 'UsdRenderSettings',
         SCHEMA_TOKEN = '__usdRenderSettings',
@@ -153,7 +162,7 @@
     ),
 
     #--------------------------------------------------------------------------
-    # usdImaging/usdImagingRenderProduct
+    # usdImaging/usdRenderProduct
     dict(
         SCHEMA_NAME = 'UsdRenderProduct',
         SCHEMA_TOKEN = '__usdRenderProduct',
@@ -181,7 +190,7 @@
     ),
 
     #--------------------------------------------------------------------------
-    # usdImaging/usdImagingRenderVar
+    # usdImaging/usdRenderVar
     dict(
         SCHEMA_NAME = 'UsdRenderVar',
         SCHEMA_TOKEN = '__usdRenderVar',
@@ -196,4 +205,4 @@
             ('namespacedSettings', T_CONTAINER, dict(ADD_LOCATOR=True)),
         ],
     ),
-]
+] 

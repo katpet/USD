@@ -18,6 +18,7 @@
 #include "pxr/usd/pcp/pathTranslation.h"
 #include "pxr/usd/pcp/utils.h"
 #include "pxr/usd/sdf/changeList.h"
+#include "pxr/usd/sdf/fileFormat.h"
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/ar/resolverContextBinder.h"
 #include "pxr/base/tf/envSetting.h"
@@ -26,7 +27,7 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_ENV_SETTING(
-    PCP_ENABLE_MINIMAL_CHANGES_FOR_LAYER_OPERATIONS, false,
+    PCP_ENABLE_MINIMAL_CHANGES_FOR_LAYER_OPERATIONS, true,
     "If enabled, pcp will compute a minimal amount of targeted change entries "
     "for layer operations. This can result in a significant performance "
     "improvement when muting/unmuting layer or adding/removing sublayers.");
@@ -398,15 +399,24 @@ Pcp_LayerMightHaveRelocates(const PcpCache* cache,
         return false;
     }
 
+    // this checks if relocates have been specified on the layer using the 
+    // LayerRelocates key.
+    const bool hasLayerRelocates = !layer->GetRelocates().empty();
+
     if (cache->IsUsd()) {
         // In Usd mode, relocates may only be specified on on the absolute root
         // path, so this quick check is sufficient in all cases.
-        return !layer->GetRelocates().empty();
-    } else if (!layer->IsDirty()){
-        // If not in Usd mode, the layer hints may be used to quickly determine
-        // the presence of relocates.  This flag is reset whenever a layer is
-        // edited however.
-        return layer->GetHints().mightHaveRelocates;
+        return hasLayerRelocates;
+    }
+
+    // If not in Usd mode, relocates may be specified on either layers or
+    // individual prims.
+    if (hasLayerRelocates) {
+        return true;
+    } else if (!layer->GetHints().mightHaveRelocates){
+        // No relocates authored on individual prims, and we've already
+        // checked that there are no relocates on the layer itself.
+        return false;
     } else {
         // Unfortunately, an exhaustive search is necessary in the case where a 
         // non usd layer is dirty.
@@ -1546,6 +1556,7 @@ PcpChanges::_DidMuteLayer(
     if (!TfGetEnvSetting(PCP_ENABLE_MINIMAL_CHANGES_FOR_LAYER_OPERATIONS) ||
         !mutedLayer ||
         mutedLayer->IsEmpty() ||
+        mutedLayer->GetFileFormat()->IsPackage() ||
         Pcp_LayerMightHaveRelocates(cache, mutedLayer))
     {
         _DidChangeSublayerAndLayerStacks(
@@ -1605,6 +1616,7 @@ PcpChanges::_DidUnmuteLayer(
     if (!TfGetEnvSetting(PCP_ENABLE_MINIMAL_CHANGES_FOR_LAYER_OPERATIONS) ||
         !unmutedLayer ||
         unmutedLayer->IsEmpty() ||
+        unmutedLayer->GetFileFormat()->IsPackage() ||
         Pcp_LayerMightHaveRelocates(cache, unmutedLayer)) 
     {
         _DidChangeSublayerAndLayerStacks(
@@ -2040,6 +2052,8 @@ PcpChanges::_Optimize(PcpCacheChanges* changes)
         Pcp_SubsumeDescendants(&changes->didChangePrims, *i);
         Pcp_SubsumeDescendants(&changes->didChangeSpecs, *i);
         Pcp_SubsumeDescendants(&changes->_didChangeSpecsInternal, *i);
+        Pcp_SubsumeDescendants(
+            &changes->_didChangePrimSpecsAndChildrenInternal, *i);
     }
 
     // Subsume spec changes for prims whose indexes will be rebuilt.
@@ -2186,17 +2200,27 @@ PcpChanges::_DidAddOrRemoveSublayer(
     std::string* debugSummary,
     std::vector<bool>* significant)
 {
+    PcpCacheChanges& cacheChanges = _GetCacheChanges(cache);
+
+    // Before processing any sublayer paths first check if we have encountered
+    // this layer / sublayer path before.  If we have, it indicates that there
+    // is a cycle in this layer stack.
+    const auto key = std::make_pair(layer, sublayerPath);
+    if (!cacheChanges._processedLayerSublayerPathPairs.insert(key).second) {
+        significant->resize(layerStacks.size(), false);
+        return;
+    }
+
     PCP_APPEND_DEBUG(
         "  Layer @%s@ changed sublayers\n",
         layer ? layer->GetIdentifier().c_str() : "invalid");
 
     const auto& processChanges = 
-        [this, &cache, &sublayerPath, &debugSummary, &layer](
+        [this, &cache, &sublayerPath, &debugSummary, &layer, &cacheChanges](
             const SdfLayerRefPtr sublayer,
             const PcpLayerStackPtrVector& layerStacks,
             _SublayerChangeType sublayerChange)
         {
-            PcpCacheChanges& cacheChanges = _GetCacheChanges(cache);
             if (sublayer) {
                 _lifeboat.Retain(sublayer);
                 cacheChanges.didAddOrRemoveNonEmptySublayer |= !sublayer->IsEmpty();
@@ -2217,6 +2241,7 @@ PcpChanges::_DidAddOrRemoveSublayer(
                     PCP_ENABLE_MINIMAL_CHANGES_FOR_LAYER_OPERATIONS) ||
                 !sublayer ||
                 sublayer->IsEmpty() ||
+                sublayer->GetFileFormat()->IsPackage() ||
                 Pcp_LayerMightHaveRelocates(cache, sublayer)) 
             {
                 bool isSignificant = false;
@@ -2865,7 +2890,7 @@ void
 PcpChanges::_DidChangeSpecStackAndChildrenInternal(
     const PcpCache* cache, const SdfPath& path)
 {
-    _GetCacheChanges(cache)._didChangeSpecsAndChildrenInternal.insert(path);
+    _GetCacheChanges(cache)._didChangePrimSpecsAndChildrenInternal.insert(path);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE
